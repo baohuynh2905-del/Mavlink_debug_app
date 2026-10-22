@@ -5,8 +5,12 @@
 #include "payload_profile.h"
 #include "payload_link.h"
 #include "stats_widget.h"
+#include "video_page.h"
 
 #include <QCloseEvent>
+#include <QComboBox>
+#include <QInputDialog>
+#include <QMessageBox>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -75,7 +79,25 @@ MainWindow::MainWindow(QWidget *parent)
     m_port->setValue(savedOk ? savedPort : kDefaultPort);
     m_timeout->setValue(qBound(1, s.value(QStringLiteral("conn/timeoutS"), 3).toInt(), 60));
 
+    m_profileBox = new QComboBox;
+    m_profileBox->setObjectName(QStringLiteral("profileBox"));
+    m_profileBox->setMinimumContentsLength(14);
+    m_profileBox->setToolTip(QStringLiteral("Saved connection profiles; choosing one fills IP, port and timeout"));
+    m_saveProfile = new QPushButton(QStringLiteral("Save…"));
+    m_saveProfile->setToolTip(QStringLiteral("Save the current IP, port and timeout as a named profile"));
+    m_deleteProfile = new QPushButton(QStringLiteral("Delete"));
+    {
+        QSettings ps;
+        m_profiles = loadProfiles(ps);
+    }
+    reloadProfiles(s.value(QStringLiteral("conn/profile")).toString());
+
     auto *row1 = new QHBoxLayout;
+    row1->addWidget(new QLabel(QStringLiteral("Profile")));
+    row1->addWidget(m_profileBox);
+    row1->addWidget(m_saveProfile);
+    row1->addWidget(m_deleteProfile);
+    row1->addSpacing(12);
     row1->addWidget(new QLabel(QStringLiteral("Payload IP")));
     row1->addWidget(m_ip);
     row1->addWidget(new QLabel(QStringLiteral("UDP port")));
@@ -121,6 +143,10 @@ MainWindow::MainWindow(QWidget *parent)
     tabs->addTab(new GimbalPage(m_link, dict, vioProfile()), QStringLiteral("Gimbal"));
     tabs->addTab(new CameraPage(m_link, dict, vioProfile()), QStringLiteral("Camera (VIO)"));
     tabs->addTab(new TelemetryPage(m_link, dict), QStringLiteral("Telemetry"));
+    auto *video = new VideoPage;
+    tabs->addTab(video, QStringLiteral("Video"));
+    connect(m_ip, &QLineEdit::textChanged, video, &VideoPage::setPayloadIp);
+    video->setPayloadIp(m_ip->text());
     tabs->addTab(m_statsPage, QStringLiteral("Statistics"));
     connect(commands, &CommandsPage::showFrame, this, [this, tabs](quint64 index) {
         tabs->setCurrentWidget(m_inspector);
@@ -143,6 +169,15 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(m_connectBtn, &QPushButton::clicked, this, &MainWindow::onConnectClicked);
     connect(m_ip, &QLineEdit::returnPressed, this, &MainWindow::onConnectClicked);
+    connect(m_profileBox, &QComboBox::activated, this, [this](int i) {
+        if (i <= 0 || i > m_profiles.size()) return;
+        const ConnectionProfile &p = m_profiles[i - 1];
+        m_ip->setText(p.ip);
+        m_port->setValue(p.port);
+        m_timeout->setValue(p.timeoutS);
+    });
+    connect(m_saveProfile, &QPushButton::clicked, this, &MainWindow::saveProfile);
+    connect(m_deleteProfile, &QPushButton::clicked, this, &MainWindow::deleteProfile);
     connect(m_timeout, &QSpinBox::valueChanged, this, [this](int v) { m_link->setTimeoutMs(v * 1000); });
     connect(m_link, &PayloadLink::stateChanged, this, &MainWindow::onStateChanged);
     connect(m_link, &PayloadLink::framesCaptured, this, &MainWindow::onFrames);
@@ -175,6 +210,45 @@ void MainWindow::saveSettings() const
         s.setValue(QStringLiteral("conn/port"), m_port->value());
     }
     s.setValue(QStringLiteral("conn/timeoutS"), m_timeout->value());
+    s.setValue(QStringLiteral("conn/profile"), m_profileBox->currentIndex() > 0 ? m_profileBox->currentText() : QString());
+}
+
+void MainWindow::reloadProfiles(const QString &select)
+{
+    m_profileBox->clear();
+    m_profileBox->addItem(QStringLiteral("(none)"));
+    for (const ConnectionProfile &p : m_profiles) m_profileBox->addItem(p.name);
+    const int i = select.isEmpty() ? 0 : m_profileBox->findText(select, Qt::MatchFixedString);
+    m_profileBox->setCurrentIndex(i > 0 ? i : 0);
+}
+
+void MainWindow::saveProfile()
+{
+    bool ok = false;
+    const QString current = m_profileBox->currentIndex() > 0 ? m_profileBox->currentText() : QString();
+    const QString name = QInputDialog::getText(this, QStringLiteral("Save profile"), QStringLiteral("Profile name"),
+                                               QLineEdit::Normal, current, &ok);
+    if (!ok) return;
+    if (const QString err = upsertProfile(m_profiles, {name, m_ip->text(), m_port->value(), m_timeout->value()}); !err.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Profile not saved"), err);
+        return;
+    }
+    QSettings s;
+    saveProfiles(s, m_profiles);
+    reloadProfiles(name.trimmed());
+}
+
+void MainWindow::deleteProfile()
+{
+    const int i = m_profileBox->currentIndex();
+    if (i <= 0) return;
+    if (QMessageBox::question(this, QStringLiteral("Delete profile"),
+                              QStringLiteral("Delete the profile \"%1\"?").arg(m_profileBox->currentText())) != QMessageBox::Yes)
+        return;
+    m_profiles.removeAt(i - 1);
+    QSettings s;
+    saveProfiles(s, m_profiles);
+    reloadProfiles();
 }
 
 void MainWindow::onConnectClicked()
@@ -195,6 +269,9 @@ void MainWindow::onStateChanged()
     const bool idle = st == LinkState::Disconnected || st == LinkState::Failed;
     m_ip->setEnabled(idle);
     m_port->setEnabled(idle);
+    m_profileBox->setEnabled(idle);
+    m_saveProfile->setEnabled(idle);
+    m_deleteProfile->setEnabled(idle);
     m_connectBtn->setEnabled(idle || isOpen(st));
     m_connectBtn->setText(isOpen(st) ? QStringLiteral("Disconnect") : QStringLiteral("Connect"));
     m_stateBadge->setText(QStringLiteral("<span style='color:%1;font-size:14pt'>&#9679;</span> <b>%2</b>")

@@ -2,6 +2,7 @@
 
 #include "captured_frame.h"
 #include "mavlink_dict.h"
+#include "profiles.h"
 
 #include <QMainWindow>
 
@@ -9,6 +10,7 @@ class InspectorWidget;
 class PayloadLink;
 class QLabel;
 class QLineEdit;
+class QComboBox;
 class QPushButton;
 class QSpinBox;
 class StatsWidget;
@@ -31,12 +33,18 @@ private:
     void onFrames(const std::vector<CapturedFrame> &frames);
     void refreshStats(bool tick = false);  // tick: the 1 Hz timer, which also samples the rates
     void saveSettings() const;
+    void reloadProfiles(const QString &select = {});
+    void saveProfile();
+    void deleteProfile();
 
     MavlinkDict m_dict;
     PayloadLink *m_link;
     InspectorWidget *m_inspector;
     StatsWidget *m_statsPage;
 
+    QList<ConnectionProfile> m_profiles;
+    QComboBox *m_profileBox;
+    QPushButton *m_saveProfile, *m_deleteProfile;
     QLineEdit *m_ip;
     QSpinBox *m_port;
     QSpinBox *m_timeout;

@@ -3,9 +3,9 @@
 Desktop tool (C++17, Qt 6 Widgets, CMake) for controlling Gremsy payloads through the official
 PayloadSDK and inspecting the real MAVLink traffic of that connection.
 
-**Status: Stage 4.** Connection management, the MAVLink Inspector, VIO gimbal and camera
-controls, telemetry, and command/acknowledgement tracking are done. Live video and other payload
-models are not built yet. Checked against a real VIO (see *Hardware checks*): connection, capture,
+**Status: Stage 5.** Connection management with saved profiles, the MAVLink Inspector, VIO
+gimbal and camera controls, telemetry, command/acknowledgement tracking, and live RTSP video are
+done. Payload models other than the VIO are not built yet. Checked against a real VIO (see *Hardware checks*): connection, capture,
 telemetry, read-only requests, camera zoom/focus/settings, gimbal angle and rate moves, and
 gimbal mode changes.
 
@@ -25,6 +25,8 @@ gimbal mode changes.
 | `src/command_tracker.*` | Matches each UI action to its outgoing frame and to the payload's ACK |
 | `src/telemetry.*` | Latest validated RX frames, the payload's DEBUG parameter stream, and gimbal flag rules |
 | `src/payload_profile*` | Per-model parameter IDs and values, taken from the SDK's `payload-define/<model>_sdk.h` |
+| `src/video_player.*`, `src/video_page.*` | RTSP video (GStreamer `appsink`) and the Video tab |
+| `src/profiles.*` | Saved connection profiles |
 | `src/main_window.*`, `src/inspector_widget.*`, `src/stats_widget.*`, `src/payload_pages.*` | GUI |
 | `tests/` | Hardware-free tests (CTest). `fake_payload.h` is a loopback UDP peer used in place of a payload. |
 | `tools/check_tlog.py` | Reads a `.tlog` file with pymavlink, an independent check of recorded files |
@@ -38,7 +40,12 @@ sudo apt install build-essential cmake git pkg-config \
     qt6-base-dev libgl-dev libpcap-dev \
     libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+# optional, enables the video test (local RTSP server):
+sudo apt install libgstrtspserver-1.0-dev
 ```
+
+At runtime, video needs `rtspsrc` (plugins-good), `h264parse` (plugins-bad), and `avdec_h264`
+(libav).
 
 ## Build and test
 
@@ -55,9 +62,13 @@ ctest --test-dir build --output-on-failure
 ./build/mavlink_debug_app      # under WSLg the window opens on the Windows desktop
 ```
 
-Enter the payload IP and UDP port (default `192.168.55.1:14566`), then click **Connect**. The last
-valid IP, port, and timeout are saved and validated again on start-up. Connecting never sends a
-movement or camera command.
+Enter the payload IP and UDP port (default `192.168.55.1:14566`), then click **Connect**. Connecting
+never sends a movement or camera command.
+
+- **Profiles:** **Save…** stores the current IP, port, and timeout under a name. Choosing a profile
+  fills those fields.
+- **Persistence:** profiles, the last values, inspector filters, and video settings are restored on
+  start-up. Each stored value is validated again before use, and invalid entries are dropped.
 
 ### Connection status
 
@@ -211,6 +222,26 @@ Results from a VIO over USB-C (RNDIS, laptop at `192.168.55.100`, 2026-10-22):
   - The bytes after the terminating NUL in `vendor_name` and `model_name` contain leftover text
     (for example `/dev/ttyTHS1`, `Baud=115200`). The app stops at the first NUL.
 
+## Live video
+
+The **Video** tab plays the payload's RTSP stream:
+
+- **URL:** built from the payload IP using Gremsy's format, `rtsp://<IP>:8554/payload`, until you
+  edit it.
+- **Independent of MAVLink:** it has its own Start/Stop and does not need the MAVLink connection,
+  or affect it.
+- **Pipeline:** `rtspsrc ! decodebin ! videoconvert ! appsink`. The URL is set as an element
+  property, never parsed as pipeline syntax.
+- **Threading:** frames are copied on GStreamer's streaming thread; the GUI paints only the latest
+  one. Errors and end-of-stream are shown as text.
+- **Transport:**
+  - **TCP** (default): works through WSL2 NAT.
+  - **UDP**: RTP from the VIO does not get through WSL2 NAT ("no protocols left"). Use it on native
+    Linux.
+  - **UDP, then TCP**: tries UDP first.
+- **Measured on the VIO:** H.264, 1280×720, about 31 fps decoded over TCP while the MAVLink link
+  ran at about 90 frames/s, with no errors on either.
+
 ## Threading
 
 - The SDK's I/O threads only copy each datagram into a bounded queue (20,000 entries). Overflow is
@@ -282,7 +313,8 @@ loopback fake payload and checks that `sdkQuit()` returns in under 2 s (measured
 - **VIO only:** other models need their own `payload_profile_<model>.cpp`. Zoom to an absolute level
   (`setCameraZoomTarget`, a custom `MAV_CMD_USER_4`) is not exposed because its range is not
   documented per model.
-- **No live video yet:** planned for Stage 5.
+- **Video:** there is no recording or snapshot from the app (use the payload's own recording).
+  Under WSL2 NAT only TCP transport works.
 
 - **No time-range filter:** the inspector shows the live session only. A log viewer that loads
   recorded files is not implemented.

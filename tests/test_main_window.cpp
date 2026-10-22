@@ -1,6 +1,8 @@
 // Offscreen GUI test. Set SCREENSHOT_DIR to also save a PNG of the window.
 #include "main_window.h"
 #include "payload_link.h"
+#include "video_page.h"
+#include "video_player.h"
 
 #include <QLineEdit>
 #include <QPushButton>
@@ -127,6 +129,9 @@ private slots:
         w.findChild<QSpinBox *>(QStringLiteral("portSpin"))->setValue(14566);
         w.findChild<QPushButton *>(QStringLiteral("connectButton"))->click();
         QTRY_COMPARE_WITH_TIMEOUT(w.link()->state(), LinkState::Heartbeat, 8000);
+        auto *video = w.findChild<VideoPage *>();
+        w.findChild<QPushButton *>(QStringLiteral("videoStartStop"))->click();
+        QTRY_COMPARE_WITH_TIMEOUT(video->player()->state(), VideoPlayer::State::Playing, 15000);
         QTest::qWait(4000);  // info replies and parameter streams
         auto *tabs = w.findChild<QTabWidget *>();
         for (int i = 0; i < tabs->count(); ++i) {

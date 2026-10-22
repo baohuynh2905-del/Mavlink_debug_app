@@ -1,5 +1,9 @@
 #include "frame_model.h"
 #include "link_health.h"
+#include "profiles.h"
+
+#include <QSettings>
+#include <QTemporaryDir>
 
 #include <QtTest>
 
@@ -102,6 +106,36 @@ private slots:
         QCOMPARE(m.data(m.index(0, FrameModel::Dir), Qt::DisplayRole).toString(), QStringLiteral("RX"));
         m.clear();
         QCOMPARE(m.rowCount(), 0);
+    }
+
+    void connectionProfiles()
+    {
+        QList<ConnectionProfile> list;
+        QVERIFY(upsertProfile(list, {QStringLiteral(" Bench VIO "), QStringLiteral("192.168.55.1"), 14566, 3}).isEmpty());
+        QVERIFY(upsertProfile(list, {QStringLiteral("Drone"), QStringLiteral("10.0.0.2"), 14550, 5}).isEmpty());
+        QVERIFY(upsertProfile(list, {QStringLiteral("bench vio"), QStringLiteral("192.168.55.2"), 14566, 3}).isEmpty());  // replaces
+        QCOMPARE(list.size(), 2);
+        QCOMPARE(list[0].ip, QStringLiteral("192.168.55.2"));
+        QCOMPARE(list[0].name, QStringLiteral("bench vio"));
+        QVERIFY(!upsertProfile(list, {QStringLiteral("bad"), QStringLiteral("1.2.3"), 14566, 3}).isEmpty());
+        QVERIFY(!upsertProfile(list, {QStringLiteral(""), QStringLiteral("1.2.3.4"), 14566, 3}).isEmpty());
+        QVERIFY(!upsertProfile(list, {QStringLiteral("t"), QStringLiteral("1.2.3.4"), 14566, 0}).isEmpty());
+        QCOMPARE(list.size(), 2);
+
+        QTemporaryDir dir;
+        QSettings s(dir.filePath(QStringLiteral("p.ini")), QSettings::IniFormat);
+        saveProfiles(s, list);
+        QCOMPARE(loadProfiles(s).size(), 2);
+        QCOMPARE(loadProfiles(s)[1].port, 14550);
+
+        // A tampered entry is dropped on load, the others survive
+        s.beginWriteArray(QStringLiteral("profiles"), 3);
+        s.setArrayIndex(2);
+        s.setValue(QStringLiteral("name"), QStringLiteral("evil"));
+        s.setValue(QStringLiteral("ip"), QStringLiteral("255.255.255.255"));
+        s.setValue(QStringLiteral("port"), 1);
+        s.endArray();
+        QCOMPARE(loadProfiles(s).size(), 2);
     }
 };
 

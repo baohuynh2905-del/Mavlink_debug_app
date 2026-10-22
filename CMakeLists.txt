@@ -26,6 +26,8 @@ if(NOT sdk_unpatched EQUAL 0)
 endif()
 
 find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GSTVIDEO REQUIRED IMPORTED_TARGET gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0)
 add_subdirectory(${SDK_DIR}/libs ${CMAKE_BINARY_DIR}/payloadsdk)  # target: PayloadSDK
 target_link_libraries(PayloadSDK Threads::Threads)  # plain signature: the SDK's own CMake uses it
 
@@ -38,7 +40,7 @@ target_compile_options(mavcore PRIVATE -Wall -Wextra)
 add_library(appcore STATIC
     src/link_health.cpp src/payload_link.cpp src/frame_model.cpp src/frame_filter.cpp
     src/frame_text.cpp src/frame_writer.cpp src/flow_stats.cpp src/mavlink_dict.cpp
-    src/command_tracker.cpp src/telemetry.cpp src/payload_profile_vio.cpp)
+    src/command_tracker.cpp src/telemetry.cpp src/payload_profile_vio.cpp src/profiles.cpp)
 target_include_directories(appcore PUBLIC src)
 target_link_libraries(appcore PUBLIC Qt6::Gui mavcore PRIVATE PayloadSDK)
 target_compile_options(appcore PRIVATE -Wall -Wextra)
@@ -47,8 +49,9 @@ target_compile_definitions(appcore PRIVATE
     MAVLINK_XML_DIR="${SDK_DIR}/libs/third-party/mavlink/include/mavlink/v2.0/message_definitions")
 
 # --- Widgets and the GUI application ---
-add_library(appgui STATIC src/main_window.cpp src/inspector_widget.cpp src/stats_widget.cpp src/payload_pages.cpp)
-target_link_libraries(appgui PUBLIC Qt6::Widgets appcore)
+add_library(appgui STATIC src/main_window.cpp src/inspector_widget.cpp src/stats_widget.cpp src/payload_pages.cpp
+    src/video_player.cpp src/video_page.cpp)
+target_link_libraries(appgui PUBLIC Qt6::Widgets appcore PRIVATE PkgConfig::GSTVIDEO)
 target_compile_options(appgui PRIVATE -Wall -Wextra)
 
 add_executable(mavlink_debug_app src/main.cpp)
@@ -64,6 +67,14 @@ add_executable(test_sdk_transport tests/test_sdk_transport.cpp)
 target_link_libraries(test_sdk_transport PayloadSDK mavcore)
 add_test(NAME sdk_transport COMMAND test_sdk_transport)
 set_tests_properties(sdk_transport PROPERTIES TIMEOUT 30)  # a shutdown hang fails instead of blocking
+
+pkg_check_modules(GSTRTSPSERVER IMPORTED_TARGET gstreamer-rtsp-server-1.0)  # test only: local RTSP server
+if(GSTRTSPSERVER_FOUND)
+    add_executable(test_video tests/test_video.cpp)
+    target_link_libraries(test_video PRIVATE Qt6::Test appgui PkgConfig::GSTRTSPSERVER PkgConfig::GSTVIDEO)
+    add_test(NAME video COMMAND test_video)
+    set_tests_properties(video PROPERTIES TIMEOUT 60 ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+endif()
 
 foreach(t link_logic payload_link inspector payload_control main_window)
     add_executable(test_${t} tests/test_${t}.cpp)
