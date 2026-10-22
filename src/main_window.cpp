@@ -118,7 +118,7 @@ MainWindow::MainWindow(QWidget *parent)
     auto *tabs = new QTabWidget;
     tabs->addTab(m_inspector, QStringLiteral("MAVLink Inspector"));
     tabs->addTab(commands, QStringLiteral("Commands"));
-    tabs->addTab(new GimbalPage(m_link, dict), QStringLiteral("Gimbal"));
+    tabs->addTab(new GimbalPage(m_link, dict, vioProfile()), QStringLiteral("Gimbal"));
     tabs->addTab(new CameraPage(m_link, dict, vioProfile()), QStringLiteral("Camera (VIO)"));
     tabs->addTab(new TelemetryPage(m_link, dict), QStringLiteral("Telemetry"));
     tabs->addTab(m_statsPage, QStringLiteral("Statistics"));

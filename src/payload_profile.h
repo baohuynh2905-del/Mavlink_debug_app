@@ -18,6 +18,8 @@ struct PayloadProfile {
     std::vector<ParamOption> recordSources;
     const char *irPaletteId;
     std::vector<ParamOption> irPalettes;
+    const char *gimbalModeId;  // PARAM_EXT_SET gimbal mode (older route than the attitude flags)
+    std::vector<ParamOption> gimbalModes;
 };
 
 const PayloadProfile &vioProfile();

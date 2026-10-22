@@ -20,6 +20,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <limits>
 #include <cmath>
 
 // ---------------------------------------------------------------------------------------------
@@ -74,34 +75,32 @@ static QGroupBox *group(const QString &title, QLayout *layout)
 
 // --- Gimbal ----------------------------------------------------------------------------------
 
-GimbalPage::GimbalPage(PayloadLink *link, const MavlinkDict *dict, QWidget *parent) : PayloadPage(link, dict, parent)
+GimbalPage::GimbalPage(PayloadLink *link, const MavlinkDict *dict, const PayloadProfile &profile, QWidget *parent)
+    : PayloadPage(link, dict, parent), m_profile(profile)
 {
-    // Mode (flags in GIMBAL_DEVICE_SET_ATTITUDE, as the SDK example gimbal_set_mode.cpp does)
+    // Mode: PARAM_EXT_SET GB_MODE (Mavlink_Command_List "Set gimbal mode"). The SDK's newer route
+    // (flags in GIMBAL_DEVICE_SET_ATTITUDE) had no effect on a VIO running software 3.1.4.18.
     auto *modes = new QGridLayout;
-    auto addMode = [&](const QString &text, GimbalFlags::Change c, int row, int col, const QString &tip) {
-        QPushButton *b = button(text, tip);
-        connect(b, &QPushButton::clicked, this, [this, text, c] { report(m_link->gimbalMode(c, QStringLiteral("Gimbal mode: ") + text)); });
-        modes->addWidget(b, row, col);
-    };
-    addMode(QStringLiteral("Lock"), GimbalFlags::Change::Lock, 0, 0, QStringLiteral("Sets YAW_LOCK: the camera holds its heading"));
-    addMode(QStringLiteral("Follow"), GimbalFlags::Change::Follow, 0, 1, QStringLiteral("Clears YAW_LOCK: the camera follows the vehicle"));
-    addMode(QStringLiteral("Mapping"), GimbalFlags::Change::Mapping, 0, 2, QStringLiteral("Sets Gremsy bit 0x4000 (mapping mode)"));
-    QPushButton *home = button(QStringLiteral("Home"), QStringLiteral("Sets NEUTRAL, then clears it 100 ms later"));
-    connect(home, &QPushButton::clicked, this, [this] { report(m_link->gimbalHome()); });
-    modes->addWidget(home, 1, 0);
-    addMode(QStringLiteral("Motors on"), GimbalFlags::Change::MotorsOn, 1, 1, QStringLiteral("Clears RETRACT"));
-    QPushButton *off = button(QStringLiteral("Motors off…"), QStringLiteral("Sets RETRACT: motors stop, the camera is not stabilised"));
-    connect(off, &QPushButton::clicked, this, [this] {
-        if (QMessageBox::question(this, QStringLiteral("Motors off"),
-                                  QStringLiteral("Switch the gimbal motors off? The camera will not be stabilised "
-                                                 "and may drop to its end stop.")) == QMessageBox::Yes)
-            report(m_link->gimbalMode(GimbalFlags::Change::MotorsOff, QStringLiteral("Gimbal motors off")));
-    });
-    modes->addWidget(off, 1, 2);
-    auto *modeNote = new QLabel(QStringLiteral("Mode changes start from the flags last reported by the gimbal, so "
-                                               "they are refused until a GIMBAL_DEVICE_ATTITUDE_STATUS arrives."));
+    int col = 0;
+    for (const ParamOption &o : m_profile.gimbalModes) {
+        const QString name = QString::fromLatin1(o.label);
+        const bool off = name == QLatin1String("OFF");
+        QPushButton *b = button(off ? QStringLiteral("OFF…") : name,
+                                QStringLiteral("PARAM_EXT_SET %1 = %2").arg(QLatin1String(m_profile.gimbalModeId)).arg(o.value));
+        connect(b, &QPushButton::clicked, this, [this, name, off, v = o.value] {
+            if (off && QMessageBox::question(this, QStringLiteral("Gimbal OFF"),
+                                             QStringLiteral("Switch the gimbal to OFF? The camera will not be stabilised "
+                                                            "and may drop to its end stop.")) != QMessageBox::Yes)
+                return;
+            report(m_link->cameraParam(QStringLiteral("Gimbal mode ") + name, m_profile.gimbalModeId, v));
+        });
+        modes->addWidget(b, 0, col++);
+    }
+    if (!m_profile.gimbalModeId) modes->addWidget(new QLabel(QStringLiteral("Gimbal modes not supported by this profile")), 0, 0);
+    auto *modeNote = new QLabel(QStringLiteral("Confirmed by PARAM_EXT_ACK and by the gimbal's reported flags and GB_MODE "
+                                               "parameter (status on the right)."));
     modeNote->setWordWrap(true);
-    modes->addWidget(modeNote, 2, 0, 1, 3);
+    modes->addWidget(modeNote, 1, 0, 1, std::max(col, 1));
 
     // Angle
     auto spin = [](double limit, const QString &suffix) {
@@ -140,7 +139,8 @@ GimbalPage::GimbalPage(PayloadLink *link, const MavlinkDict *dict, QWidget *pare
     m_speed->setRange(1, 90);
     m_speed->setValue(20);
     m_speed->setSuffix(QStringLiteral(" °/s"));
-    m_speed->setToolTip(QStringLiteral("The SDK documents no rate limit; the gimbal may clamp the value."));
+    m_speed->setToolTip(QStringLiteral("The SDK documents no rate limit. On a VIO (software 3.1.4.18, default RC settings) "
+                                       "10°/s produced a measured ~1.7°/s: compare with the measured angular rate."));
     m_rateTimer = new QTimer(this);
     m_rateTimer->setInterval(100);
     connect(m_rateTimer, &QTimer::timeout, this, [this] {
@@ -183,7 +183,7 @@ GimbalPage::GimbalPage(PayloadLink *link, const MavlinkDict *dict, QWidget *pare
     meas->addRow(QStringLiteral("Measured attitude"), m_attitude);
     meas->addRow(QStringLiteral("Measured − commanded"), m_delta);
     meas->addRow(QStringLiteral("Angular rate"), m_rates);
-    meas->addRow(QStringLiteral("Mode (from flags)"), m_mode);
+    meas->addRow(QStringLiteral("Mode (flags / GB_MODE)"), m_mode);
     meas->addRow(QStringLiteral("Flags"), m_flags);
     meas->addRow(QStringLiteral("Failure flags"), m_failures);
     auto *note = new QLabel(QStringLiteral("Measured values come from GIMBAL_DEVICE_ATTITUDE_STATUS. GIMBAL_DEVICE_SET_ATTITUDE has "
@@ -240,7 +240,15 @@ void GimbalPage::refresh()
                                       .arg(deg(a.pitchDeg), deg(a.rollDeg), deg(a.yawDeg)).arg(c->frame.sysid).arg(c->frame.compid),
                                   t, n, to));
     m_rates->setText(agedValue(QStringLiteral("x %1/s, y %2/s, z %3/s").arg(deg(a.rateX), deg(a.rateY), deg(a.rateZ)), t, n, to));
-    m_mode->setText(agedValue(GimbalFlags::modeName(a.flags), t, n, to));
+    QString gbMode = QStringLiteral("not received");
+    const auto &params = m_link->telemetry().payloadParams();
+    for (auto it = params.cbegin(); it != params.cend(); ++it) {
+        if (PayloadLink::payloadParamName(it.key()) != QLatin1String("GB_MODE")) continue;
+        gbMode = QString::number(it->value);
+        for (const ParamOption &o : m_profile.gimbalModes)
+            if (o.value == unsigned(it->value)) gbMode = QLatin1String(o.label);
+    }
+    m_mode->setText(agedValue(QStringLiteral("%1 / %2").arg(GimbalFlags::modeName(a.flags), gbMode), t, n, to));
     QString flags;
     if (const MavlinkDict::Field *f = m_dict ? m_dict->field(MAVLINK_MSG_ID_GIMBAL_DEVICE_ATTITUDE_STATUS, QStringLiteral("flags")) : nullptr)
         flags = m_dict->label(*f, a.flags & ~GimbalFlags::Mapping);
@@ -434,14 +442,12 @@ TelemetryPage::TelemetryPage(PayloadLink *link, const MavlinkDict *dict, QWidget
 
     m_component = valueLabel();
     m_camera = valueLabel();
-    m_appVersion = valueLabel();
     m_distance = valueLabel();
     auto *dev = new QFormLayout;
     dev->addRow(req);
     dev->addRow(QStringLiteral("Component (model / software / serial)"), m_component);
     dev->addRow(QStringLiteral("Camera (vendor / model / firmware)"), m_camera);
-    dev->addRow(QStringLiteral("Payload app version"), m_appVersion);
-    dev->addRow(QStringLiteral("Rangefinder (DISTANCE_SENSOR)"), m_distance);
+    dev->addRow(QStringLiteral("Rangefinder"), m_distance);
     auto *controls = new QWidget;
     auto *cl = new QVBoxLayout(controls);
     cl->setContentsMargins(0, 0, 0, 0);
@@ -479,11 +485,12 @@ void TelemetryPage::refresh()
     const TelemetryStore &tel = m_link->telemetry();
     const int to = m_link->timeoutMs();
     const qint64 n = now();
+    const int once = std::numeric_limits<int>::max();  // one-off replies: show their age, never "stale"
 
     if (const CapturedFrame *c = tel.latest(MAVLINK_MSG_ID_COMPONENT_INFORMATION_BASIC))
         m_component->setText(agedValue(QStringLiteral("%1 / %2 / %3").arg(bytesText(c->frame, "model_name"),
                                                                          bytesText(c->frame, "software_version"),
-                                                                         bytesText(c->frame, "serial_number")), c->monoNs, n, to));
+                                                                         bytesText(c->frame, "serial_number")), c->monoNs, n, once));
     else
         m_component->setText(agedValue({}, -1, n, to));
     if (const CapturedFrame *c = tel.latest(MAVLINK_MSG_ID_CAMERA_INFORMATION)) {
@@ -493,28 +500,22 @@ void TelemetryPage::refresh()
         m_camera->setText(agedValue(QStringLiteral("%1 / %2 / 0x%3 (MAVLink order %4.%5.%6.%7, reversed %7.%6.%5.%4)")
                                         .arg(bytesText(c->frame, "vendor_name"), bytesText(c->frame, "model_name"))
                                         .arg(fw, 8, 16, QLatin1Char('0'))
-                                        .arg(fw & 0xFF).arg((fw >> 8) & 0xFF).arg((fw >> 16) & 0xFF).arg(fw >> 24), c->monoNs, n, to));
+                                        .arg(fw & 0xFF).arg((fw >> 8) & 0xFF).arg((fw >> 16) & 0xFF).arg(fw >> 24), c->monoNs, n, once));
     } else {
         m_camera->setText(agedValue({}, -1, n, to));
     }
-    if (const CapturedFrame *c = tel.latest(MAVLINK_MSG_ID_DISTANCE_SENSOR))
-        m_distance->setText(agedValue(QStringLiteral("%1 m").arg(fieldNumber(c->frame, "current_distance").value_or(NAN) / 100.0, 0, 'f', 2),
-                                      c->monoNs, n, to));
-    else
-        m_distance->setText(agedValue({}, -1, n, to));
-
     const auto &params = tel.payloadParams();
-    QStringList ver;
-    qint64 verNs = -1;
-    for (const char *k : {"APP_VER_X", "APP_VER_Y", "APP_VER_Z"}) {
-        for (auto it = params.cbegin(); it != params.cend(); ++it) {
-            if (PayloadLink::payloadParamName(it.key()) == QLatin1String(k)) {
-                ver << QString::number(it->value);
-                verNs = std::max(verNs, it->monoNs);
-            }
-        }
+    if (const CapturedFrame *c = tel.latest(MAVLINK_MSG_ID_DISTANCE_SENSOR)) {
+        m_distance->setText(agedValue(QStringLiteral("%1 m (DISTANCE_SENSOR)").arg(fieldNumber(c->frame, "current_distance").value_or(NAN) / 100.0, 0, 'f', 2),
+                                      c->monoNs, n, to));
+    } else {
+        // The VIO streams its rangefinder as the LRF_RANGE parameter instead of DISTANCE_SENSOR
+        m_distance->setText(agedValue({}, -1, n, to));
+        for (auto it = params.cbegin(); it != params.cend(); ++it)
+            if (PayloadLink::payloadParamName(it.key()) == QLatin1String("LRF_RANGE"))
+                m_distance->setText(agedValue(QStringLiteral("%1 (LRF_RANGE parameter; unit not documented)").arg(it->value, 0, 'g', 6),
+                                              it->monoNs, n, to));
     }
-    m_appVersion->setText(agedValue(ver.join(QLatin1Char('.')), ver.size() == 3 ? verNs : -1, n, to));
 
     m_params->setRowCount(params.size());
     int row = 0;

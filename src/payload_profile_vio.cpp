@@ -30,6 +30,12 @@ const PayloadProfile &vioProfile()
          {PAYLOAD_CAMERA_IR_PALETTE_8, "8  (F1 Globow | G1 Rainbow2)"},
          {PAYLOAD_CAMERA_IR_PALETTE_9, "9  (F1 Gradedfire | G1 Tint)"},
          {PAYLOAD_CAMERA_IR_PALETTE_10, "10 (F1 Hottest | G1 BlackHot)"}},
+        PAYLOAD_CAMERA_GIMBAL_MODE,
+        {{PAYLOAD_CAMERA_GIMBAL_MODE_OFF, "OFF"},
+         {PAYLOAD_CAMERA_GIMBAL_MODE_LOCK, "LOCK"},
+         {PAYLOAD_CAMERA_GIMBAL_MODE_FOLLOW, "FOLLOW"},
+         {PAYLOAD_CAMERA_GIMBAL_MODE_MAPPING, "MAPPING"},
+         {PAYLOAD_CAMERA_GIMBAL_MODE_RESET, "RESET"}},
     };
     return p;
 }

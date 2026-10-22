@@ -6,6 +6,7 @@
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTabWidget>
+#include <QRegularExpression>
 #include <QTableView>
 #include <QtTest>
 
@@ -113,6 +114,30 @@ private slots:
         connectBtn->click();
         QTRY_COMPARE_WITH_TIMEOUT(w.link()->state(), LinkState::Disconnected, 3000);
         QVERIFY(ip->isEnabled());
+    }
+
+    // Read-only: connects to a real payload and screenshots each tab. Runs only when HW_IP is set.
+    void hardwareScreenshots()
+    {
+        const QByteArray ip = qgetenv("HW_IP"), dir = qgetenv("SCREENSHOT_DIR");
+        if (ip.isEmpty() || dir.isEmpty()) QSKIP("set HW_IP and SCREENSHOT_DIR to run against a payload");
+        MainWindow w;
+        w.show();
+        w.findChild<QLineEdit *>(QStringLiteral("ipEdit"))->setText(QString::fromLatin1(ip));
+        w.findChild<QSpinBox *>(QStringLiteral("portSpin"))->setValue(14566);
+        w.findChild<QPushButton *>(QStringLiteral("connectButton"))->click();
+        QTRY_COMPARE_WITH_TIMEOUT(w.link()->state(), LinkState::Heartbeat, 8000);
+        QTest::qWait(4000);  // info replies and parameter streams
+        auto *tabs = w.findChild<QTabWidget *>();
+        for (int i = 0; i < tabs->count(); ++i) {
+            tabs->setCurrentIndex(i);
+            QTest::qWait(1100);
+            QString name = tabs->tabText(i).toLower();
+            name.replace(QRegularExpression(QStringLiteral("[^a-z]+")), QStringLiteral("_"));
+            w.grab().save(QString::fromLocal8Bit(dir) + QStringLiteral("/hw_") + name + QStringLiteral(".png"));
+        }
+        w.findChild<QPushButton *>(QStringLiteral("connectButton"))->click();
+        QTRY_COMPARE_WITH_TIMEOUT(w.link()->state(), LinkState::Disconnected, 3000);
     }
 };
 

@@ -75,3 +75,7 @@ endforeach()
 # --- Headless capture tool (hardware checks, field recordings) ---
 add_executable(mavlink_capture tools/mavlink_capture.cpp)
 target_link_libraries(mavlink_capture PRIVATE appcore)
+
+# Hardware check (moves a real gimbal): built, never run by ctest
+add_executable(hw_vio_commands tests/hw_vio_commands.cpp)
+target_link_libraries(hw_vio_commands PRIVATE appcore)

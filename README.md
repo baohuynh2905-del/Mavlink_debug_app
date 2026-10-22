@@ -5,9 +5,9 @@ PayloadSDK and inspecting the real MAVLink traffic of that connection.
 
 **Status: Stage 4.** Connection management, the MAVLink Inspector, VIO gimbal and camera
 controls, telemetry, and command/acknowledgement tracking are done. Live video and other payload
-models are not built yet. Connection, capture, telemetry, and read-only requests have been checked
-against a real VIO (see *Hardware checks*). The commands that act on the payload have not been run on
-hardware yet.
+models are not built yet. Checked against a real VIO (see *Hardware checks*): connection, capture,
+telemetry, read-only requests, camera zoom/focus/settings, gimbal angle and rate moves, and
+gimbal mode changes.
 
 ## Layout
 
@@ -29,6 +29,7 @@ hardware yet.
 | `tests/` | Hardware-free tests (CTest). `fake_payload.h` is a loopback UDP peer used in place of a payload. |
 | `tools/check_tlog.py` | Reads a `.tlog` file with pymavlink, an independent check of recorded files |
 | `tools/mavlink_capture.cpp` | Headless capture and report (`build/mavlink_capture`), for hardware checks |
+| `tests/hw_vio_commands.cpp` | Hardware check of the control path on a real VIO; moves the gimbal; never run by ctest |
 
 ## Dependencies (Ubuntu 24.04, native or WSL2)
 
@@ -121,17 +122,20 @@ frames that passed CRC validation, never from what was sent.
 
 | Page | Controls | Feedback |
 |---|---|---|
-| Gimbal | Lock, Follow, Mapping, Home, Motors on/off (with confirmation); move to angle (pitch ±90°, roll/yaw ±180°, the limits `setGimbalSpeed()` enforces); hold-to-move rate buttons | Measured attitude, rates, flags, mode and failure flags from `GIMBAL_DEVICE_ATTITUDE_STATUS`, next to the last commanded angle and the difference |
+| Gimbal | Modes OFF (with confirmation), LOCK, FOLLOW, MAPPING, RESET via `PARAM_EXT_SET GB_MODE`; move to angle (pitch ±90°, roll/yaw ±180°, the limits `setGimbalSpeed()` enforces); hold-to-move rate buttons | Measured attitude, rates, flags, failure flags and the `GB_MODE` parameter, next to the last commanded angle and the difference |
 | Camera | Photo/video mode, capture, start/stop recording; view source, record source and IR palette (VIO values from `vio_sdk.h`); hold-to-zoom and hold-to-focus, zoom to a percentage, auto focus | `CAMERA_CAPTURE_STATUS`, `STORAGE_INFORMATION`, `CAMERA_SETTINGS`, and the values the payload reports in its DEBUG stream |
 | Telemetry | Request payload info and parameter streams | Component and camera identity, app version, rangefinder, and every DEBUG parameter with its age |
 | Commands | — | Every action: outgoing frame, target, state, ACK result, queue and ACK latency. Double-click a frame number to open it in the inspector. |
 
 Notes:
 
-- **Gimbal modes:** the mode is carried in the `GIMBAL_DEVICE_SET_ATTITUDE` flags, as in the SDK's
-  current `examples/gimbal_set_mode.cpp`. The bits other than the mode bits come from the flags the
-  gimbal last reported, so mode buttons are refused until a `GIMBAL_DEVICE_ATTITUDE_STATUS` has been
-  received. Bit `0x4000` is Gremsy's "mapping" bit; it is not defined in the MAVLink XML.
+- **Gimbal modes:** set with `PARAM_EXT_SET GB_MODE` (Mavlink_Command_List "Set gimbal mode";
+  values from `vio_sdk.h`) and acknowledged by `PARAM_EXT_ACK`.
+  - The SDK's newer route, flags in `GIMBAL_DEVICE_SET_ATTITUDE` as in the current
+    `examples/gimbal_set_mode.cpp`, had no effect on VIO software 3.1.4.18. It is kept in
+    `PayloadLink::gimbalMode()` and the hardware check, not in the GUI.
+  - Bit `0x4000` of the reported flags is Gremsy's "mapping" bit; it is not defined in the MAVLink
+    XML.
 - **Hold-to-move rates and continuous zoom/focus:** rates are re-sent every 100 ms while a button is
   held, like Gremsy's `ui_demo`, and a zero rate is sent on release. Zoom and focus send a
   start command on press and a stop on release. Rate repeats stop if the link closes.
@@ -183,6 +187,24 @@ Results from a VIO over USB-C (RNDIS, laptop at `192.168.55.100`, 2026-10-22):
     COMMAND_ACK. The tracker reports this as "Answered (message, no ACK)".
 - **Sequence numbers:** the payload core and the camera sometimes send seq N+1 before N (two sender
   threads share one counter). No frame is missing; the statistics count this as *reordered*.
+- **Commands** (`build/hw_vio_commands --ip 192.168.55.1`; small motions, each undone; no photo or
+  recording):
+  - **Camera:** `PARAM_EXT_SET C_SOURCE`, continuous zoom, and auto focus are all acknowledged by
+    1/100 within 1–4 ms. `EO_ZOOM` went 1 → 2.16 → 1.
+  - **Gimbal angle:** pitch −10° and back were reached in 100–300 ms. `GIMBAL_DEVICE_SET_ATTITUDE`
+    has no ACK, so telemetry is the confirmation.
+  - **Gimbal rate:** a yaw rate of 10°/s re-sent for 1 s gave a reported peak of only ~1.7°/s and
+    ~1.9° of motion. The commands arrive and the gimbal reacts, but at about a sixth of the request.
+    The SDK's `gimbal_move_speed` example switches `RC_MODE` to Standard first; that persistent
+    setting was not changed in this check.
+  - **Modes:** `GB_MODE` = FOLLOW, then LOCK, was acknowledged in 1–2 ms. The flags changed
+    `0x3C` → `0x2C` → `0x3C` within ~100 ms, and the `GB_MODE` parameter followed. The flag route
+    (`YAW_LOCK` cleared in `GIMBAL_DEVICE_SET_ATTITUDE`) did not change the mode.
+  - **Not exercised:** OFF, RESET, MAPPING, photo, and recording.
+- **GUI:** `HW_IP=192.168.55.1 SCREENSHOT_DIR=/tmp/shots QT_QPA_PLATFORM=offscreen
+  build/test_main_window hardwareScreenshots` connects read-only and saves a screenshot of each tab.
+- **Rangefinder:** the VIO sends no `DISTANCE_SENSOR`; it streams the `LRF_RANGE` parameter (about
+  2–4 on a desk; the unit is not documented).
 - **Firmware quirks:**
   - `CAMERA_INFORMATION.firmware_version` is `0x03010412` for software 3.1.4.18, which is the
     reverse of the MAVLink byte order. The Telemetry tab shows both readings.
@@ -254,9 +276,9 @@ loopback fake payload and checks that `sdkQuit()` returns in under 2 s (measured
 
 ## Known limitations
 
-- **Not yet tested on hardware:** the control flows are verified against the SDK source and a
-  loopback fake payload only. Enum values, gimbal flag behaviour, and which commands the VIO
-  firmware acknowledges still need confirming on a real payload.
+- **Partly tested on hardware:** gimbal OFF, RESET and MAPPING, photo capture, and recording have
+  not been run on a VIO. The gimbal rate is executed far slower than commanded under the payload's
+  current RC settings.
 - **VIO only:** other models need their own `payload_profile_<model>.cpp`. Zoom to an absolute level
   (`setCameraZoomTarget`, a custom `MAV_CMD_USER_4`) is not exposed because its range is not
   documented per model.

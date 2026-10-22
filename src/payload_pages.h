@@ -41,7 +41,7 @@ class GimbalPage : public PayloadPage
 {
     Q_OBJECT
 public:
-    GimbalPage(PayloadLink *link, const MavlinkDict *dict, QWidget *parent = nullptr);
+    GimbalPage(PayloadLink *link, const MavlinkDict *dict, const PayloadProfile &profile, QWidget *parent = nullptr);
 
 protected:
     void refresh() override;
@@ -51,6 +51,7 @@ private:
     QPushButton *holdButton(const QString &text, double pitchSign, double yawSign);
     void stopRate(bool force = false);  // force: send zero even if not moving (Stop button)
 
+    const PayloadProfile &m_profile;
     QDoubleSpinBox *m_pitch, *m_roll, *m_yaw, *m_speed;
     QLabel *m_commanded, *m_attitude, *m_rates, *m_mode, *m_flags, *m_failures, *m_delta;
     QTimer *m_rateTimer;
@@ -87,7 +88,7 @@ protected:
     void refresh() override;
 
 private:
-    QLabel *m_component, *m_camera, *m_appVersion, *m_distance;
+    QLabel *m_component, *m_camera, *m_distance;
     QTableWidget *m_params;
 };
 

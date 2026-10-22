@@ -227,6 +227,9 @@ private slots:
         QCOMPARE(p.viewSources.at(1).value, 1u);  // EO only, per Mavlink_Command_List and vio_sdk.h
         QCOMPARE(p.recordSources.back().value, 5u);
         QCOMPARE(p.irPalettes.size(), size_t(10));
+        QCOMPARE(QString::fromLatin1(p.gimbalModeId), QStringLiteral("GB_MODE"));
+        QCOMPARE(p.gimbalModes.at(2).value, 2u);  // FOLLOW, verified on a VIO (software 3.1.4.18)
+        QCOMPARE(QString::fromLatin1(p.gimbalModes.at(2).label), QStringLiteral("FOLLOW"));
     }
 
     void commandsOnTheWire()
