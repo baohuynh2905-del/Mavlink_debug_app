@@ -49,18 +49,21 @@ StatsWidget::StatsWidget(const MavlinkDict *dict, QWidget *parent) : QWidget(par
                                            QStringLiteral("Component"), QStringLiteral("Msg ID"), QStringLiteral("Message"),
                                            QStringLiteral("Count"), QStringLiteral("Rate (Hz)"), QStringLiteral("Bytes"),
                                            QStringLiteral("Last seen (s ago)")});
-    m_srcModel = new QStandardItemModel(0, 8, this);
+    m_srcModel = new QStandardItemModel(0, 9, this);
     m_srcModel->setHorizontalHeaderLabels({QStringLiteral("Sys"), QStringLiteral("Comp"), QStringLiteral("Component"),
-                                           QStringLiteral("RX frames"), QStringLiteral("Last seq"), QStringLiteral("Seq gaps"),
-                                           QStringLiteral("Seq skipped (max lost)"), QStringLiteral("Seq backwards")});
+                                           QStringLiteral("RX frames"), QStringLiteral("Last seq"), QStringLiteral("Forward jumps"),
+                                           QStringLiteral("Missing (max lost)"), QStringLiteral("Reordered"),
+                                           QStringLiteral("Other backwards")});
     m_msgView = makeView(m_msgModel);
     m_msgView->sortByColumn(6, Qt::DescendingOrder);
     m_srcView = makeView(m_srcModel);
 
     auto *note = new QLabel(QStringLiteral(
-        "Sequence numbers are checked on received frames only, per sysid/compid. A forward gap means frames "
-        "<i>may</i> have been lost (UDP drop, or the sender skipped numbers). A backwards jump means a restart, "
-        "reordering, or a sender using several counters. The SDK itself sends that way, so TX is not checked."));
+        "Sequence numbers are checked on received frames only, per sysid/compid. <i>Missing</i> counts numbers that "
+        "were jumped over and never arrived later: frames that <i>may</i> have been lost (or the sender skipped them). "
+        "A late frame that fills a jump counts as reordered. The VIO does this routinely; it is not loss. Other "
+        "backwards jumps mean a restart or a sender with several counters. The SDK itself sends that way, so TX "
+        "is not checked."));
     note->setWordWrap(true);
 
     auto *top = new QHBoxLayout;
@@ -153,7 +156,7 @@ void StatsWidget::refresh()
     for (const auto &[key, s] : m_flows.rxSources) {
         auto it = m_srcRows.find(key);
         if (it == m_srcRows.end()) {
-            QList<QStandardItem *> row = newRow(8, {2});
+            QList<QStandardItem *> row = newRow(9, {2});
             row[0]->setData(key >> 8, Qt::DisplayRole);
             row[1]->setData(key & 0xFF, Qt::DisplayRole);
             row[2]->setText(componentName(quint8(key & 0xFF)));
@@ -162,9 +165,10 @@ void StatsWidget::refresh()
         }
         it->second[3]->setData(s.frames, Qt::DisplayRole);
         it->second[4]->setData(s.lastSeq, Qt::DisplayRole);
-        it->second[5]->setData(s.gaps, Qt::DisplayRole);
-        it->second[6]->setData(s.skipped, Qt::DisplayRole);
-        it->second[7]->setData(s.backwards, Qt::DisplayRole);
+        it->second[5]->setData(s.jumps, Qt::DisplayRole);
+        it->second[6]->setData(s.missing, Qt::DisplayRole);
+        it->second[7]->setData(s.reordered, Qt::DisplayRole);
+        it->second[8]->setData(s.backwards, Qt::DisplayRole);
     }
 
     if (m_msgModel->rowCount() != m_sizedMsgRows) {  // size columns only when rows appear, not every tick

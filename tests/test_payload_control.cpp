@@ -137,6 +137,21 @@ private slots:
         t.onFrame(frameOf(commandAck(100, MAV_CMD_VIDEO_START_CAPTURE, MAV_RESULT_DENIED), CapturedFrame::Rx, 120));
         QCOMPARE(t.commands().back().state, TrackedCommand::Rejected);
         QCOMPARE(t.commands().back().result, int(MAV_RESULT_DENIED));
+
+        // REQUEST_MESSAGE answered by the message itself, with no COMMAND_ACK (real VIO behaviour)
+        t.expect(QStringLiteral("info"), MAVLINK_MSG_ID_COMMAND_LONG, MAV_CMD_REQUEST_MESSAGE, {}, 200, {},
+                 MAVLINK_MSG_ID_COMPONENT_INFORMATION_BASIC);
+        t.onFrame(frameOf(commandLong(MAV_CMD_REQUEST_MESSAGE, 26, MAVLINK_MSG_ID_COMPONENT_INFORMATION_BASIC), CapturedFrame::Tx, 210));
+        mavlink_message_t info;
+        char e[32] = {0};  // pack copies the full array length
+        mavlink_msg_component_information_basic_pack_chan(1, 154, MAVLINK_COMM_0, &info, 0, 0, 0, e, e, e, e, e);
+        QVERIFY(!t.onFrame(frameOf(info, CapturedFrame::Rx, 212)));  // from another component
+        mavlink_msg_component_information_basic_pack_chan(1, 26, MAVLINK_COMM_0, &info, 0, 0, 0, e, e, e, e, e);
+        QVERIFY(t.onFrame(frameOf(info, CapturedFrame::Rx, 214)));
+        QCOMPARE(t.commands().back().state, TrackedCommand::Answered);
+        QVERIFY(!t.tick(214 + 10 * CommandTracker::kAckTimeoutMs));  // answered: never times out
+        t.onFrame(frameOf(commandAck(26, MAV_CMD_REQUEST_MESSAGE, MAV_RESULT_ACCEPTED), CapturedFrame::Rx, 300));
+        QCOMPARE(t.commands().back().state, TrackedCommand::Accepted);  // a late ACK still counts
     }
 
     void trackerParamAckAndTimeouts()

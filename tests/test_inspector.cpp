@@ -172,28 +172,41 @@ private slots:
             c.frame.seq = uint8_t(seq);  // header seq only; the stats never re-check the CRC
             s.add(c);
         };
-        rx(154, 1); rx(154, 2); rx(154, 5);  // 3 and 4 missing
+        rx(154, 1); rx(154, 2); rx(154, 5);  // 3 and 4 jumped over
         const SourceSeq &gimbal = s.rxSources.at(quint16(1 << 8 | 154));
-        QCOMPARE(gimbal.gaps, 1ull);
-        QCOMPARE(gimbal.skipped, 2ull);
-        rx(154, 3);  // backwards: restart, reordering or several counters
+        QCOMPARE(gimbal.jumps, 1ull);
+        QCOMPARE(gimbal.missing, 2ull);
+        rx(154, 3);  // late: fills the jump (VIO pattern), not a restart
+        QCOMPARE(gimbal.reordered, 1ull);
+        QCOMPARE(gimbal.missing, 1ull);
+        QCOMPARE(gimbal.backwards, 0ull);
+        rx(154, 6);  // continues after 5: the late frame did not move the counter
+        QCOMPARE(gimbal.jumps, 1ull);
+        rx(154, 2);  // backwards to a number that was never skipped: restart / second counter
         QCOMPARE(gimbal.backwards, 1ull);
-        QCOMPARE(gimbal.frames, 4ull);
+        QCOMPARE(gimbal.frames, 6ull);
+
+        // The exact sequence captured from a real VIO payload core: 200, 202, 201, 203
+        rx(26, 200); rx(26, 202); rx(26, 201); rx(26, 203);
+        const SourceSeq &core = s.rxSources.at(quint16(1 << 8 | 26));
+        QCOMPARE(core.missing, 0ull);
+        QCOMPARE(core.reordered, 1ull);
+        QCOMPARE(core.backwards, 0ull);
 
         rx(100, 254); rx(100, 255); rx(100, 0); rx(100, 1);  // wraparound is continuous
         const SourceSeq &camera = s.rxSources.at(quint16(1 << 8 | 100));
-        QCOMPARE(camera.gaps, 0ull);
+        QCOMPARE(camera.jumps, 0ull);
         QCOMPARE(camera.backwards, 0ull);
         rx(100, 3);
-        QCOMPARE(camera.gaps, 1ull);
-        QCOMPARE(camera.skipped, 1ull);
+        QCOMPARE(camera.jumps, 1ull);
+        QCOMPARE(camera.missing, 1ull);
 
         CapturedFrame tx = captured(heartbeat(193, MAV_TYPE_ONBOARD_CONTROLLER), CapturedFrame::Tx);
         s.add(tx);
         QVERIFY(!s.rxSources.count(quint16(1 << 8 | 193)));  // TX seq is never checked
         QCOMPARE(s.flows.at({CapturedFrame::Tx, 1, 193, 0}).count, 1ull);
         s.sampleRates(0.5);
-        QCOMPARE(s.flows.at({CapturedFrame::Rx, 1, 154, 0}).rateHz, 8.0);  // 4 frames / 0.5 s
+        QCOMPARE(s.flows.at({CapturedFrame::Rx, 1, 154, 0}).rateHz, 12.0);  // 6 frames / 0.5 s
     }
 
     void csvAndJson()

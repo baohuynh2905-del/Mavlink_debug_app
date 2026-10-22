@@ -5,8 +5,9 @@ PayloadSDK and inspecting the real MAVLink traffic of that connection.
 
 **Status: Stage 4.** Connection management, the MAVLink Inspector, VIO gimbal and camera
 controls, telemetry, and command/acknowledgement tracking are done. Live video and other payload
-models are not built yet. Nothing has been tested against a physical payload so far; all tests use a
-loopback fake payload.
+models are not built yet. Connection, capture, telemetry, and read-only requests have been checked
+against a real VIO (see *Hardware checks*). The commands that act on the payload have not been run on
+hardware yet.
 
 ## Layout
 
@@ -27,6 +28,7 @@ loopback fake payload.
 | `src/main_window.*`, `src/inspector_widget.*`, `src/stats_widget.*`, `src/payload_pages.*` | GUI |
 | `tests/` | Hardware-free tests (CTest). `fake_payload.h` is a loopback UDP peer used in place of a payload. |
 | `tools/check_tlog.py` | Reads a `.tlog` file with pymavlink, an independent check of recorded files |
+| `tools/mavlink_capture.cpp` | Headless capture and report (`build/mavlink_capture`), for hardware checks |
 
 ## Dependencies (Ubuntu 24.04, native or WSL2)
 
@@ -155,6 +157,37 @@ Notes:
 | Accepted / In progress / Rejected | The ACK result (`MAV_RESULT` / `PARAM_ACK`). |
 | Sent (no ACK defined) | `GIMBAL_DEVICE_SET_ATTITUDE` has no acknowledgement; check the gimbal telemetry instead. |
 | No ACK (timeout) | Nothing within 3 s. This does **not** mean the command failed. |
+
+## Hardware checks
+
+`build/mavlink_capture --ip 192.168.55.1 --seconds 30 --out capture` connects through the same code
+as the GUI, records `capture.tlog` and `capture.jsonl`, and prints the components seen, the message
+rates, the RX sequence statistics, and the result of each request. It sends only what the GUI sends
+on connect, so nothing moves.
+
+Results from a VIO over USB-C (RNDIS, laptop at `192.168.55.100`, 2026-10-22):
+
+- **Device:** Gremsy JSC "Vio", software 3.1.4.18, hardware V42A.
+- **Network:** WSL2 NAT works for this link; mirrored networking was not needed. Over 20–30 s
+  captures there were 0 CRC errors, 0 junk bytes, and 0 capture drops.
+- **Components and rates:**
+  - Payload core 1/26: HEARTBEAT ~2 Hz; DEBUG parameters ~40 Hz once the streams are requested.
+  - Camera 1/100 (`MAV_COMP_ID_CAMERA`; the command list PDF says 101): HEARTBEAT,
+    STORAGE_INFORMATION, and CAMERA_CAPTURE_STATUS at ~1 Hz.
+  - Gimbal 1/154: GIMBAL_DEVICE_ATTITUDE_STATUS, MOUNT_ORIENTATION, and RAW_IMU at ~10 Hz;
+    HEARTBEAT and MOUNT_STATUS at 1 Hz.
+- **Acknowledgements:**
+  - `MAV_CMD_REQUEST_CAMERA_*` and `MAV_CMD_REQUEST_STORAGE_INFORMATION` are acknowledged in
+    3–250 ms; `MAV_CMD_SET_MESSAGE_INTERVAL` in 1–3 ms.
+  - `MAV_CMD_REQUEST_MESSAGE` is answered with the requested message within ~4 ms but never with a
+    COMMAND_ACK. The tracker reports this as "Answered (message, no ACK)".
+- **Sequence numbers:** the payload core and the camera sometimes send seq N+1 before N (two sender
+  threads share one counter). No frame is missing; the statistics count this as *reordered*.
+- **Firmware quirks:**
+  - `CAMERA_INFORMATION.firmware_version` is `0x03010412` for software 3.1.4.18, which is the
+    reverse of the MAVLink byte order. The Telemetry tab shows both readings.
+  - The bytes after the terminating NUL in `vendor_name` and `model_name` contain leftover text
+    (for example `/dev/ttyTHS1`, `Baud=115200`). The app stops at the first NUL.
 
 ## Threading
 

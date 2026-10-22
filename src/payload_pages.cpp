@@ -488,8 +488,11 @@ void TelemetryPage::refresh()
         m_component->setText(agedValue({}, -1, n, to));
     if (const CapturedFrame *c = tel.latest(MAVLINK_MSG_ID_CAMERA_INFORMATION)) {
         const quint32 fw = quint32(fieldNumber(c->frame, "firmware_version").value_or(0));
-        // MAVLink encoding: (dev << 24) | (patch << 16) | (minor << 8) | major
-        m_camera->setText(agedValue(QStringLiteral("%1 / %2 / %3.%4.%5.%6").arg(bytesText(c->frame, "vendor_name"), bytesText(c->frame, "model_name"))
+        // MAVLink defines (dev << 24) | (patch << 16) | (minor << 8) | major. A VIO running software 3.1.4.18
+        // reports 0x03010412, i.e. the reverse, so both readings are shown instead of guessing.
+        m_camera->setText(agedValue(QStringLiteral("%1 / %2 / 0x%3 (MAVLink order %4.%5.%6.%7, reversed %7.%6.%5.%4)")
+                                        .arg(bytesText(c->frame, "vendor_name"), bytesText(c->frame, "model_name"))
+                                        .arg(fw, 8, 16, QLatin1Char('0'))
                                         .arg(fw & 0xFF).arg((fw >> 8) & 0xFF).arg((fw >> 16) & 0xFF).arg(fw >> 24), c->monoNs, n, to));
     } else {
         m_camera->setText(agedValue({}, -1, n, to));

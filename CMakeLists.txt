@@ -71,3 +71,7 @@ foreach(t link_logic payload_link inspector payload_control main_window)
     add_test(NAME ${t} COMMAND test_${t})
     set_tests_properties(${t} PROPERTIES TIMEOUT 60 ENVIRONMENT QT_QPA_PLATFORM=offscreen)
 endforeach()
+
+# --- Headless capture tool (hardware checks, field recordings) ---
+add_executable(mavlink_capture tools/mavlink_capture.cpp)
+target_link_libraries(mavlink_capture PRIVATE appcore)

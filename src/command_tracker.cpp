@@ -9,7 +9,7 @@ QString paramExtId(const MavFrame &f)
 }
 
 quint64 CommandTracker::expect(const QString &action, quint32 msgid, quint16 command, const QString &paramId, qint64 nowMs,
-                               std::function<bool(const MavFrame &)> content)
+                               std::function<bool(const MavFrame &)> content, quint32 responseMsgid)
 {
     TrackedCommand t;
     t.id = m_nextId++;
@@ -18,6 +18,7 @@ quint64 CommandTracker::expect(const QString &action, quint32 msgid, quint16 com
     t.command = command;
     t.paramId = paramId;
     t.content = std::move(content);
+    t.responseMsgid = responseMsgid;
     t.requestedMs = nowMs;
     m_cmds.push_back(t);
     if (m_cmds.size() > kMaxHistory) m_cmds.pop_front();
@@ -59,6 +60,21 @@ bool CommandTracker::onFrame(const CapturedFrame &c)
         return true;
     }
 
+    // RX: the message a request command asked for (an ACK, if one also comes, takes precedence)
+    bool changed = false;
+    for (TrackedCommand &x : m_cmds) {
+        if (x.responseMsgid == f.msgid && (x.state == TrackedCommand::Sent || x.state == TrackedCommand::AckTimeout) &&
+            ms >= x.sentMs && (x.targetComponent <= 0 || x.targetComponent == f.compid)) {
+            x.state = TrackedCommand::Answered;
+            x.ackMs = ms;
+            x.ackFrame = c.index;
+            x.ackFrom = f.compid;
+            ++m_changes;
+            changed = true;
+            break;
+        }
+    }
+
     // RX acknowledgements
     TrackedCommand *t = nullptr;
     int result = -1, progress = -1;
@@ -71,7 +87,9 @@ bool CommandTracker::onFrame(const CapturedFrame &c)
         inProgress = result == MAV_RESULT_IN_PROGRESS;
         // Oldest waiting command with this MAV_CMD whose target is the answering component
         for (TrackedCommand &x : m_cmds) {
-            if ((x.state == TrackedCommand::Sent || x.state == TrackedCommand::InProgress) &&
+            // Late ACKs (after a timeout or after the answering message) are still recorded
+            if ((x.state == TrackedCommand::Sent || x.state == TrackedCommand::InProgress ||
+                 x.state == TrackedCommand::AckTimeout || x.state == TrackedCommand::Answered) &&
                 x.msgid == MAVLINK_MSG_ID_COMMAND_LONG && x.command == cmd &&
                 (x.targetComponent <= 0 || x.targetComponent == f.compid)) {
                 t = &x;
@@ -86,7 +104,7 @@ bool CommandTracker::onFrame(const CapturedFrame &c)
         t = oldest(TrackedCommand::Sent, MAVLINK_MSG_ID_PARAM_EXT_SET, 0, pid);
         if (!t) t = oldest(TrackedCommand::InProgress, MAVLINK_MSG_ID_PARAM_EXT_SET, 0, pid);
     }
-    if (!t) return false;
+    if (!t) return changed;
     t->ackMs = ms;
     t->ackFrame = c.index;
     t->ackFrom = f.compid;
@@ -126,6 +144,7 @@ QString CommandTracker::stateText(TrackedCommand::State s)
     case TrackedCommand::Accepted: return QStringLiteral("Accepted");
     case TrackedCommand::Rejected: return QStringLiteral("Rejected");
     case TrackedCommand::AckTimeout: return QStringLiteral("No ACK (timeout)");
+    case TrackedCommand::Answered: return QStringLiteral("Answered (message, no ACK)");
     }
     return {};
 }

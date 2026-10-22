@@ -19,7 +19,8 @@ struct TrackedCommand {
         InProgress,    // ACK with MAV_RESULT_IN_PROGRESS / PARAM_ACK_IN_PROGRESS
         Accepted,
         Rejected,      // any other ACK result
-        AckTimeout     // no ACK in time: the payload may still have executed it
+        AckTimeout,    // no ACK in time: the payload may still have executed it
+        Answered       // the requested message arrived, without an ACK (the VIO does this for REQUEST_MESSAGE)
     };
 
     quint64 id = 0;
@@ -28,6 +29,7 @@ struct TrackedCommand {
     quint16 command = 0;   // COMMAND_LONG: MAV_CMD
     QString paramId;       // PARAM_EXT_SET: param_id
     std::function<bool(const MavFrame &)> content;  // optional extra check on the outgoing frame
+    quint32 responseMsgid = 0;  // request commands: the message that answers them (0 = none)
     State state = Queued;
     qint64 requestedMs = 0, sentMs = -1, ackMs = -1;  // monotonic
     quint64 txFrame = 0, ackFrame = 0;                // inspector frame indexes
@@ -45,7 +47,7 @@ public:
 
     // Register a UI action before calling the SDK. Returns its id.
     quint64 expect(const QString &action, quint32 msgid, quint16 command, const QString &paramId, qint64 nowMs,
-                   std::function<bool(const MavFrame &)> content = {});
+                   std::function<bool(const MavFrame &)> content = {}, quint32 responseMsgid = 0);
 
     // Feed every captured frame (TX and RX) in order. Returns true when a command changed.
     bool onFrame(const CapturedFrame &c);

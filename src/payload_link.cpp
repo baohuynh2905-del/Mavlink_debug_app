@@ -323,18 +323,18 @@ bool PayloadLink::requestPayloadInfo(bool automatic)
     if (!ready()) return false;
     const QString p = automatic ? QStringLiteral("Auto: ") : QString();
     const qint64 now = nowMs();
-    auto track = [&](const char *what, quint16 cmd) {
-        m_tracker.expect(p + QLatin1String(what), MAVLINK_MSG_ID_COMMAND_LONG, cmd, {}, now);
+    auto track = [&](const char *what, quint16 cmd, quint32 response) {
+        m_tracker.expect(p + QLatin1String(what), MAVLINK_MSG_ID_COMMAND_LONG, cmd, {}, now, {}, response);
     };
-    track("Request component info", MAV_CMD_REQUEST_MESSAGE);
+    track("Request component info", MAV_CMD_REQUEST_MESSAGE, MAVLINK_MSG_ID_COMPONENT_INFORMATION_BASIC);
     m_sdk->getPayloadComponentBasicInformation();
-    track("Request camera info", MAV_CMD_REQUEST_CAMERA_INFORMATION);
+    track("Request camera info", MAV_CMD_REQUEST_CAMERA_INFORMATION, MAVLINK_MSG_ID_CAMERA_INFORMATION);
     m_sdk->getPayloadCameraInformation();
-    track("Request camera settings", MAV_CMD_REQUEST_CAMERA_SETTINGS);
+    track("Request camera settings", MAV_CMD_REQUEST_CAMERA_SETTINGS, MAVLINK_MSG_ID_CAMERA_SETTINGS);
     m_sdk->getPayloadCameraMode();
-    track("Request storage info", MAV_CMD_REQUEST_STORAGE_INFORMATION);
+    track("Request storage info", MAV_CMD_REQUEST_STORAGE_INFORMATION, MAVLINK_MSG_ID_STORAGE_INFORMATION);
     m_sdk->getPayloadStorage();
-    track("Request capture status", MAV_CMD_REQUEST_CAMERA_CAPTURE_STATUS);
+    track("Request capture status", MAV_CMD_REQUEST_CAMERA_CAPTURE_STATUS, MAVLINK_MSG_ID_CAMERA_CAPTURE_STATUS);
     m_sdk->getPayloadCaptureStatus();
 
     // DEBUG parameter streams, with the intervals (ms) Gremsy's tests/ui_demo/main.cpp uses

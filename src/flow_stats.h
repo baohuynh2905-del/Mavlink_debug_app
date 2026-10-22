@@ -5,6 +5,7 @@
 
 #include <map>
 #include <tuple>
+#include <vector>
 
 struct FlowKey {
     int dir;
@@ -23,14 +24,17 @@ struct FlowCounter {
     quint64 sampledCount = 0;
 };
 
-// MAVLink seq is one counter per sending channel, shared by all its message types. A jump forward
-// MAY be loss; a jump backwards is a restart, reordering, or a sender with several counters.
+// MAVLink seq is one counter per sending channel, shared by all its message types. A forward jump
+// MAY be loss. A late frame that fills an earlier jump is reordering (seen on the VIO: two sender
+// threads share one counter). Any other backwards jump is a restart or a sender with several counters.
 struct SourceSeq {
     quint64 frames = 0;
     int lastSeq = -1;
-    quint64 gaps = 0;     // forward jumps
-    quint64 skipped = 0;  // sequence numbers jumped over (an upper bound on lost frames)
-    quint64 backwards = 0;
+    quint64 jumps = 0;      // forward jumps
+    quint64 missing = 0;    // numbers jumped over and never seen later: upper bound on lost frames
+    quint64 reordered = 0;  // late frames that filled an earlier jump
+    quint64 backwards = 0;  // other backwards jumps
+    std::vector<quint8> pending;  // recently jumped-over numbers, newest last (bounded)
 };
 
 class FlowStats
