@@ -134,6 +134,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_link->setDictionary(m_dict.isLoaded() ? &m_dict : nullptr);
     m_inspector = new InspectorWidget(m_dict.isLoaded() ? &m_dict : nullptr);
     m_statsPage = new StatsWidget(m_dict.isLoaded() ? &m_dict : nullptr);
+    connect(m_inspector, &InspectorWidget::networkFrames, m_statsPage, &StatsWidget::addFrames);
 
     const MavlinkDict *dict = m_dict.isLoaded() ? &m_dict : nullptr;
     auto *commands = new CommandsPage(m_link, dict);

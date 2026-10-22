@@ -12,7 +12,7 @@ void FlowStats::add(const CapturedFrame &c)
     fc.bytes += f.raw.size();
     fc.lastNs = c.monoNs;
 
-    if (c.dir != CapturedFrame::Rx) return;  // the SDK's own TX uses several seq counters
+    if (c.dir != CapturedFrame::Rx) return;  // TX: the SDK uses several counters; NET may duplicate the link
     SourceSeq &s = rxSources[quint16(f.sysid << 8 | f.compid)];
     ++s.frames;
     if (s.lastSeq >= 0) {

@@ -27,6 +27,7 @@ gimbal mode changes.
 | `src/payload_profile*` | Per-model parameter IDs and values, taken from the SDK's `payload-define/<model>_sdk.h` |
 | `src/video_player.*`, `src/video_page.*` | RTSP video (GStreamer `appsink`) and the Video tab |
 | `src/profiles.*` | Saved connection profiles |
+| `src/pcap_capture.*` | Network capture (libpcap): live interface or `.pcap` file, shown as NET |
 | `src/main_window.*`, `src/inspector_widget.*`, `src/stats_widget.*`, `src/payload_pages.*` | GUI |
 | `tests/` | Hardware-free tests (CTest). `fake_payload.h` is a loopback UDP peer used in place of a payload. |
 | `tools/check_tlog.py` | Reads a `.tlog` file with pymavlink, an independent check of recorded files |
@@ -112,6 +113,29 @@ and component ID, in observation order.
 - **Statistics tab:**
   - count, rate, bytes and last-seen time for each direction, sysid, compid and message
   - RX sequence gaps per sender, reported as *possible* loss (see below)
+
+### Network capture (other devices' traffic)
+
+The capture bar in the inspector adds MAVLink that is **not** this app's own link, for example
+payload ↔ autopilot.
+
+- **Live** on an interface, with a BPF filter. **Open .pcap…** loads a file, for example from
+  `tcpdump -w drone.pcap` on a companion computer.
+- **Display:** frames are tagged **NET**, with `source → destination` endpoints and the packet
+  timestamps. They use the same table, details, filters, statistics, and export as the app's own
+  link.
+- **Isolation:** NET frames never feed the link status, telemetry, or command tracking. RX sequence
+  statistics ignore them.
+- **Supported packets:** IPv4/UDP over Ethernet (including VLAN), Linux "any" (SLL/SLL2), and raw
+  IP. Fragments and non-UDP packets are counted as skipped.
+- **Default filter:** `udp or (vlan and udp)`. Plain `udp` silently misses VLAN-tagged packets.
+- **Permissions:** live capture needs root or the capability on the binary:
+  `sudo setcap cap_net_raw,cap_net_admin=eip build/mavlink_debug_app`. Reading a file needs neither.
+- **Visibility:** you only see traffic that reaches this interface. Other devices' unicast needs a
+  hub, switch port mirroring, or capturing on one of the endpoints. Under WSL2 NAT the WSL
+  interface sees only WSL's own traffic, so use native Linux for live capture.
+- **Duplicates:** capturing on the interface used by the app's own link shows that traffic twice,
+  once as RX/TX and once as NET. Filter by direction to separate them.
 
 ### Export and recording
 
@@ -313,6 +337,8 @@ loopback fake payload and checks that `sdkQuit()` returns in under 2 s (measured
 - **VIO only:** other models need their own `payload_profile_<model>.cpp`. Zoom to an absolute level
   (`setCameraZoomTarget`, a custom `MAV_CMD_USER_4`) is not exposed because its range is not
   documented per model.
+- **Live network capture:** checked only for its error path here (no root under WSL). The decoding
+  and file path are tested with `.pcap` files written by libpcap.
 - **Video:** there is no recording or snapshot from the app (use the payload's own recording).
   Under WSL2 NAT only TCP transport works.
 

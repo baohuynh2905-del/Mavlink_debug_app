@@ -136,7 +136,7 @@ QString csvRow(const CapturedFrame &c)
     const char *name = h ? messageName(f.msgid) : nullptr;
     QStringList cols{
         QString::number(c.index), QString::number(c.datagram), isoTime(c.wallUs), QString::number(c.monoNs),
-        c.dir == CapturedFrame::Tx ? QStringLiteral("TX") : QStringLiteral("RX"), endpointText(c.peerIp, c.peerPort),
+        dirText(c.dir), csvField(peerText(c)),
         num(f.version), num(f.sysid), num(f.compid), num(f.seq), num(f.msgid),
         name ? QString::fromLatin1(name) : QString(), num(f.len),
         f.targetSystem >= 0 ? QString::number(f.targetSystem) : QString(),
@@ -160,12 +160,13 @@ QByteArray jsonLine(const CapturedFrame &c)
                   {QStringLiteral("datagram"), qint64(c.datagram)},
                   {QStringLiteral("time_utc"), isoTime(c.wallUs)},
                   {QStringLiteral("mono_ns"), c.monoNs},
-                  {QStringLiteral("dir"), c.dir == CapturedFrame::Tx ? QStringLiteral("TX") : QStringLiteral("RX")},
+                  {QStringLiteral("dir"), dirText(c.dir)},
                   {QStringLiteral("peer"), endpointText(c.peerIp, c.peerPort)},
                   {QStringLiteral("status"), QString::fromLatin1(statusName(f.status))},
                   {QStringLiteral("signed"), f.signaturePresent},
                   {QStringLiteral("send_errno"), c.sendErrno},
                   {QStringLiteral("raw_hex"), hexString(f.raw)}};
+    if (c.dir == CapturedFrame::Net) o.insert(QStringLiteral("destination"), endpointText(c.dstIp, c.dstPort));
     if (f.headerComplete) {
         o.insert(QStringLiteral("version"), f.version);
         o.insert(QStringLiteral("sysid"), f.sysid);

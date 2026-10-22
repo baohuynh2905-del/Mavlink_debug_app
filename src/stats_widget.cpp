@@ -1,6 +1,7 @@
 #include "stats_widget.h"
 
 #include "mavlink_dict.h"
+#include "frame_model.h"
 #include "payload_link.h"
 
 #include <QHBoxLayout>
@@ -137,7 +138,7 @@ void StatsWidget::refresh()
         auto it = m_msgRows.find(key);
         if (it == m_msgRows.end()) {
             QList<QStandardItem *> row = newRow(10, {0, 3, 5});
-            row[0]->setText(key.dir == CapturedFrame::Tx ? QStringLiteral("TX") : QStringLiteral("RX"));
+            row[0]->setText(dirText(key.dir));
             row[1]->setData(key.sysid, Qt::DisplayRole);
             row[2]->setData(key.compid, Qt::DisplayRole);
             row[3]->setText(componentName(key.compid));
@@ -182,8 +183,8 @@ void StatsWidget::refresh()
 
     const TrafficStats &t = m_totals;
     m_totalsLabel->setText(
-        QStringLiteral("RX %1 frames / %2 bytes  |  TX %3 frames / %4 bytes  |  bad CRC %5  |  unknown ID %6  |  "
-                       "truncated %7  |  junk runs %8  |  send errors %9")
-            .arg(t.frames[0]).arg(t.bytes[0]).arg(t.frames[1]).arg(t.bytes[1]).arg(t.badCrc).arg(t.unknownId)
-            .arg(t.truncated).arg(t.garbage).arg(t.sendErrors));
+        QStringLiteral("RX %1 frames / %2 bytes  |  TX %3 frames / %4 bytes  |  NET %5 frames / %6 bytes  |  bad CRC %7  |  "
+                       "unknown ID %8  |  truncated %9  |  junk runs %10  |  send errors %11")
+            .arg(t.frames[0]).arg(t.bytes[0]).arg(t.frames[1]).arg(t.bytes[1]).arg(t.frames[2]).arg(t.bytes[2])
+            .arg(t.badCrc).arg(t.unknownId).arg(t.truncated).arg(t.garbage).arg(t.sendErrors));
 }

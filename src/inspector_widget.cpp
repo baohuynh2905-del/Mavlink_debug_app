@@ -5,6 +5,7 @@
 #include "frame_text.h"
 #include "frame_writer.h"
 #include "mavlink_dict.h"
+#include "pcap_capture.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -39,11 +40,12 @@ static QString withSuffix(QString path, const QString &selectedFilter)
 }
 
 InspectorWidget::InspectorWidget(const MavlinkDict *dict, QWidget *parent)
-    : QWidget(parent), m_dict(dict), m_model(new FrameModel(100000, this)), m_filter(new FrameFilter(m_model, this))
+    : QWidget(parent), m_dict(dict), m_model(new FrameModel(100000, this)), m_filter(new FrameFilter(m_model, this)),
+      m_capture(new PcapCapture(this))
 {
     // --- Filter bar ---
     m_dir = new QComboBox;
-    m_dir->addItems({QStringLiteral("RX + TX"), QStringLiteral("RX"), QStringLiteral("TX")});
+    m_dir->addItems({QStringLiteral("All directions"), QStringLiteral("RX"), QStringLiteral("TX"), QStringLiteral("NET (capture)")});
     auto byteEdit = [](const QString &tip) {
         auto *e = new QLineEdit;
         e->setValidator(new QIntValidator(0, 255, e));
@@ -102,6 +104,34 @@ InspectorWidget::InspectorWidget(const MavlinkDict *dict, QWidget *parent)
     actions->addWidget(m_recordBtn);
     actions->addWidget(m_statusLabel, 1);
 
+    // --- Network capture: other devices' MAVLink (libpcap), shown as NET ---
+    m_iface = new QComboBox;
+    m_iface->setObjectName(QStringLiteral("captureInterface"));
+    QString ifErr;
+    m_iface->addItems(PcapCapture::interfaces(&ifErr));
+    m_iface->setToolTip(ifErr.isEmpty() ? QStringLiteral("Interface to capture on (native Linux: the one on the payload network)") : ifErr);
+    m_bpf = new QLineEdit(QStringLiteral("udp or (vlan and udp)"));
+    m_bpf->setToolTip(QStringLiteral("BPF filter. Plain \"udp\" misses VLAN-tagged packets; e.g. \"udp port 14550 or (vlan and udp port 14550)\""));
+    m_captureBtn = new QPushButton(QStringLiteral("Start capture"));
+    m_captureBtn->setObjectName(QStringLiteral("captureButton"));
+    m_captureBtn->setToolTip(QStringLiteral("Live capture needs root or CAP_NET_RAW. Only traffic that reaches this "
+                                            "interface is seen (switch port mirroring / hub for other devices' unicast)."));
+    auto *openPcap = new QPushButton(QStringLiteral("Open .pcap…"));
+    openPcap->setToolTip(QStringLiteral("Load a capture file (e.g. from tcpdump on a companion computer) into the table"));
+    m_captureStatus = new QLabel;
+    auto *captureBar = new QHBoxLayout;
+    captureBar->addWidget(new QLabel(QStringLiteral("Network capture")));
+    captureBar->addWidget(m_iface);
+    captureBar->addWidget(new QLabel(QStringLiteral("Filter")));
+    captureBar->addWidget(m_bpf);
+    captureBar->addWidget(m_captureBtn);
+    captureBar->addWidget(openPcap);
+    captureBar->addWidget(m_captureStatus, 1);
+    connect(m_captureBtn, &QPushButton::clicked, this, &InspectorWidget::onCaptureClicked);
+    connect(openPcap, &QPushButton::clicked, this, &InspectorWidget::onOpenPcap);
+    connect(m_capture, &PcapCapture::framesCaptured, this, &InspectorWidget::onNetworkFrames);
+    connect(m_capture, &PcapCapture::stateChanged, this, &InspectorWidget::refreshStatus);
+
     // --- Table + details ---
     m_table = new QTableView;
     m_table->setObjectName(QStringLiteral("frameTable"));
@@ -148,11 +178,13 @@ InspectorWidget::InspectorWidget(const MavlinkDict *dict, QWidget *parent)
     auto *layout = new QVBoxLayout(this);
     layout->addLayout(filters);
     layout->addLayout(actions);
+    layout->addLayout(captureBar);
     layout->addWidget(split, 1);
 
     // Restore the last filters (validated by the widgets themselves)
     QSettings s;
-    m_dir->setCurrentIndex(qBound(0, s.value(QStringLiteral("inspector/dir")).toInt(), 2));
+    m_dir->setCurrentIndex(qBound(0, s.value(QStringLiteral("inspector/dir")).toInt(), 3));
+    m_bpf->setText(s.value(QStringLiteral("inspector/bpf"), QStringLiteral("udp or (vlan and udp)")).toString());
     m_status->setCurrentIndex(qBound(0, s.value(QStringLiteral("inspector/status")).toInt(), 3));
     m_message->setText(s.value(QStringLiteral("inspector/message")).toString());
     m_text->setText(s.value(QStringLiteral("inspector/text")).toString());
@@ -193,6 +225,8 @@ InspectorWidget::~InspectorWidget()
     s.setValue(QStringLiteral("inspector/message"), m_message->text());
     s.setValue(QStringLiteral("inspector/text"), m_text->text());
     s.setValue(QStringLiteral("inspector/autoScroll"), m_autoScroll->isChecked());
+    s.setValue(QStringLiteral("inspector/bpf"), m_bpf->text());
+    m_capture->stop();
     delete m_recorder;  // flushes and closes the recording
 }
 
@@ -423,8 +457,49 @@ void InspectorWidget::onRecordClicked(bool checked)
         QMessageBox::warning(this, QStringLiteral("Cannot record"), QStringLiteral("%1\n%2").arg(path, err));
 }
 
+void InspectorWidget::onNetworkFrames(const std::vector<CapturedFrame> &frames)
+{
+    std::vector<CapturedFrame> withSummary = frames;
+    for (CapturedFrame &c : withSummary) c.summary = summarize(c.frame, m_dict);
+    addFrames(withSummary);
+    emit networkFrames(withSummary);
+}
+
+void InspectorWidget::onCaptureClicked()
+{
+    if (m_capture->running()) {
+        m_capture->stop();
+        return;
+    }
+    QString err;
+    if (!m_capture->startLive(m_iface->currentText(), m_bpf->text(), &err))
+        QMessageBox::warning(this, QStringLiteral("Capture not started"), err);
+}
+
+void InspectorWidget::onOpenPcap()
+{
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Open capture"), QString(),
+                                                      QStringLiteral("Packet captures (*.pcap *.pcapng *.cap);;All files (*)"));
+    if (path.isEmpty()) return;
+    QString err;
+    if (!m_capture->openFile(path, m_bpf->text(), &err)) QMessageBox::warning(this, QStringLiteral("Cannot open capture"), err);
+}
+
 void InspectorWidget::refreshStatus()
 {
+    const bool cap = m_capture->running();
+    m_captureBtn->setText(cap ? QStringLiteral("Stop capture") : QStringLiteral("Start capture"));
+    m_iface->setEnabled(!cap);
+    m_bpf->setEnabled(!cap);
+    QString cs;
+    if (cap || m_capture->packets() || !m_capture->lastError().isEmpty())
+        cs = QStringLiteral("%1 %2: %3 UDP packets, %4 non-UDP/fragments skipped%5%6")
+                 .arg(cap ? QStringLiteral("Capturing") : QStringLiteral("Done"), m_capture->source().toHtmlEscaped())
+                 .arg(m_capture->packets()).arg(m_capture->skipped())
+                 .arg(m_capture->dropped() ? QStringLiteral(", <b>%1 dropped</b>").arg(m_capture->dropped()) : QString())
+                 .arg(m_capture->lastError().isEmpty() ? QString() : QStringLiteral(", <span style='color:#c01c28'>%1</span>").arg(m_capture->lastError().toHtmlEscaped()));
+    m_captureStatus->setText(cs);
+
     QStringList parts;
     parts << QStringLiteral("Showing %1 of %2 rows").arg(m_filter->rowCount()).arg(m_model->rowCount());
     if (m_model->evicted() || m_heldEvicted)

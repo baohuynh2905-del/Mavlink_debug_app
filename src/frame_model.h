@@ -33,3 +33,5 @@ private:
 };
 
 QString endpointText(quint32 ip, quint16 port);
+QString dirText(int dir);                   // RX / TX / NET
+QString peerText(const CapturedFrame &c);   // NET: "src → dst" 

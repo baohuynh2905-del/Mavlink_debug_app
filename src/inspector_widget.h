@@ -7,6 +7,7 @@
 class FrameFilter;
 class FrameModel;
 class FrameWriter;
+class PcapCapture;
 class MavlinkDict;
 class QCheckBox;
 class QComboBox;
@@ -26,6 +27,12 @@ public:
     ~InspectorWidget() override;
 
     void addFrames(const std::vector<CapturedFrame> &frames);  // always recorded, displayed unless paused
+    PcapCapture *capture() const { return m_capture; }
+
+signals:
+    void networkFrames(const std::vector<CapturedFrame> &frames);  // from network capture, for the statistics
+
+public:
     FrameModel *model() const { return m_model; }
     FrameFilter *filter() const { return m_filter; }
     bool startRecording(const QString &path, QString *error);  // also used by tests
@@ -39,11 +46,19 @@ private:
     void exportVisible();
     void onRecordClicked(bool checked);
     void refreshStatus();
+    void onCaptureClicked();
+    void onOpenPcap();
+    void onNetworkFrames(const std::vector<CapturedFrame> &frames);
 
     const MavlinkDict *m_dict;
     FrameModel *m_model;
     FrameFilter *m_filter;
     FrameWriter *m_recorder = nullptr;
+    PcapCapture *m_capture;
+    QComboBox *m_iface;
+    QLineEdit *m_bpf;
+    QPushButton *m_captureBtn;
+    QLabel *m_captureStatus;
 
     QComboBox *m_dir, *m_status;
     QLineEdit *m_sys, *m_comp, *m_message, *m_text;

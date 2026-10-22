@@ -6,6 +6,17 @@
 
 #include <cstring>
 
+QString dirText(int dir)
+{
+    return dir == CapturedFrame::Tx ? QStringLiteral("TX") : dir == CapturedFrame::Net ? QStringLiteral("NET") : QStringLiteral("RX");
+}
+
+QString peerText(const CapturedFrame &c)
+{
+    const QString src = endpointText(c.peerIp, c.peerPort);
+    return c.dir == CapturedFrame::Net ? src + QStringLiteral(" → ") + endpointText(c.dstIp, c.dstPort) : src;
+}
+
 QString endpointText(quint32 ip, quint16 port)
 {
     return QStringLiteral("%1.%2.%3.%4:%5")
@@ -55,8 +66,8 @@ QVariant FrameModel::data(const QModelIndex &index, int role) const
     switch (index.column()) {
     case Index: return c.index;
     case Time: return QDateTime::fromMSecsSinceEpoch(c.wallUs / 1000).toString(QStringLiteral("HH:mm:ss.zzz"));
-    case Dir: return c.dir == CapturedFrame::Tx ? QStringLiteral("TX") : QStringLiteral("RX");
-    case Peer: return endpointText(c.peerIp, c.peerPort);
+    case Dir: return dirText(c.dir);
+    case Peer: return peerText(c);
     case Version: return hdr ? QVariant(f.version) : QVariant();
     case SysId: return hdr ? QVariant(f.sysid) : QVariant();
     case CompId: return hdr ? QVariant(f.compid) : QVariant();

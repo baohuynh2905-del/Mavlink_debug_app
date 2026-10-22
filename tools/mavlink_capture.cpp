@@ -5,6 +5,7 @@
 //   mavlink_capture --ip 192.168.55.1 --port 14566 --seconds 30 --out capture   (writes capture.tlog + capture.jsonl)
 
 #include "flow_stats.h"
+#include "frame_model.h"
 #include "frame_writer.h"
 #include "mavlink_dict.h"
 #include "payload_link.h"
@@ -81,7 +82,7 @@ int main(int argc, char *argv[])
     printf("\n== Messages (dir sys/comp msgid name: count, average Hz)\n");
     for (const auto &[k, fc] : flows.flows) {
         const char *n = messageName(k.msgid);
-        printf("  %s %3d/%-40s %6u %-34s %6llu  %7.2f Hz\n", k.dir ? "TX" : "RX", k.sysid, qPrintable(comp(k.compid)), k.msgid,
+        printf("  %s %3d/%-40s %6u %-34s %6llu  %7.2f Hz\n", qPrintable(dirText(k.dir)), k.sysid, qPrintable(comp(k.compid)), k.msgid,
                n ? n : "(unknown)", fc.count, fc.rateHz);
     }
     printf("\n== RX sequence per source\n");

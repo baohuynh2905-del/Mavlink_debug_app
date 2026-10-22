@@ -137,7 +137,7 @@ void PayloadLink::poll()
                 }
             }
             CapturedFrame c;
-            c.index = m_nextFrameIndex++;
+            c.index = CapturedFrame::nextIndex();
             c.datagram = d.seq;
             c.monoNs = d.monoNs;
             c.wallUs = d.wallUs;

@@ -113,7 +113,6 @@ private:
     QMap<quint16, qint64> m_heartbeats;
     qint64 m_openSinceMs = -1;
     int m_timeoutMs = 3000;
-    quint64 m_nextFrameIndex = 0;
     QTimer m_pollTimer;
     CommandTracker m_tracker;
     TelemetryStore m_telemetry;
