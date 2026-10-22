@@ -91,3 +91,9 @@ target_link_libraries(mavlink_capture PRIVATE appcore)
 # Hardware check (moves a real gimbal): built, never run by ctest
 add_executable(hw_vio_commands tests/hw_vio_commands.cpp)
 target_link_libraries(hw_vio_commands PRIVATE appcore)
+
+# --- Install: the apps plus the MAVLink XML they read units/enum names from (MavlinkDict::defaultDir) ---
+include(GNUInstallDirs)
+install(TARGETS mavlink_debug_app mavlink_capture RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY ${SDK_DIR}/libs/third-party/mavlink/include/mavlink/v2.0/message_definitions/
+        DESTINATION ${CMAKE_INSTALL_BINDIR}/message_definitions FILES_MATCHING PATTERN "*.xml")
