@@ -3,11 +3,30 @@
 Desktop tool (C++17, Qt 6 Widgets, CMake) for controlling Gremsy payloads through the official
 PayloadSDK and inspecting the real MAVLink traffic of that connection.
 
-**Status: Stage 5.** Connection management with saved profiles, the MAVLink Inspector, VIO
-gimbal and camera controls, telemetry, command/acknowledgement tracking, and live RTSP video are
-done. Payload models other than the VIO are not built yet. Checked against a real VIO (see *Hardware checks*): connection, capture,
-telemetry, read-only requests, camera zoom/focus/settings, gimbal angle and rate moves, and
-gimbal mode changes.
+**Status: first release (Stages 1–6).** The release includes:
+
+- connection management with saved profiles
+- the MAVLink Inspector, with network capture
+- VIO gimbal and camera controls
+- telemetry
+- command/acknowledgement tracking
+- live RTSP video
+
+It was checked against a real VIO (see *Hardware checks*). Payload models other than the VIO are
+not supported yet. See *Acceptance checklist* and *Known limitations*.
+
+## Quick start (Ubuntu 24.04 or WSL2)
+
+```bash
+git clone --recursive https://github.com/baohuynh2905-del/Mavlink_debug_app.git
+cd Mavlink_debug_app
+scripts/build.sh --run        # checks dependencies, builds, runs the tests, starts the app
+```
+
+- **Missing dependencies:** `scripts/build.sh` prints the `apt install` line for anything missing.
+- **Parallel jobs:** it limits parallel compiles to about one per GB of free memory. On WSL2 with a
+  busy Windows host, use `JOBS=2 scripts/build.sh`: when Windows cannot back the VM's memory,
+  Hyper-V stops the whole VM mid-build.
 
 ## Layout
 
@@ -48,14 +67,18 @@ sudo apt install libgstrtspserver-1.0-dev
 At runtime, video needs `rtspsrc` (plugins-good), `h264parse` (plugins-bad), and `avdec_h264`
 (libav).
 
-## Build and test
+## Build, test, install
 
 ```bash
-git submodule update --init
+git submodule update --init                 # if not cloned with --recursive
 cmake -S . -B build
-cmake --build build -j$(nproc)
-ctest --test-dir build --output-on-failure
+cmake --build build -j4
+ctest --test-dir build --output-on-failure  # hardware-free; no payload needed
+cmake --install build --prefix ~/.local     # bin/mavlink_debug_app, bin/mavlink_capture, bin/message_definitions/
 ```
+
+The installed binaries read the MAVLink XML from `message_definitions/` next to themselves (override
+with `MAVLINK_XML_DIR`). Build-tree binaries fall back to the SDK copy.
 
 ## Run
 
@@ -329,6 +352,24 @@ loopback fake payload and checks that `sdkQuit()` returns in under 2 s (measured
 - **Send queue:** the SDK writes at most one queued message every 20 ms, so a command appears in TX
   slightly after the API call.
 
+## Acceptance checklist
+
+| # | Criterion | Status | Evidence |
+|---|---|---|---|
+| 1 | Builds in the agreed environment | ✅ | Fresh clone with `scripts/build.sh` on Ubuntu 24.04 (WSL2): 0 warnings in app code |
+| 2 | IP and port editable without recompiling | ✅ | Connection bar and profiles; the SDK takes them at runtime (`T_ConnInfo`) |
+| 3 | Connect/disconnect with the real SDK transport | ✅ | `payload_link` test; on a VIO, repeated connects; disconnect < 2 s with a silent peer (SDK patch) |
+| 4 | Meaningful connection/protocol status | ✅ | Socket open → bytes → valid MAVLink → heartbeat → stale, from observed traffic only |
+| 5 | Controls send verified commands through the SDK | ✅ VIO | Frames checked byte for byte (`payload_control` test); ACKs and telemetry on a VIO (`hw_vio_commands`) |
+| 6 | Inspector shows real TX/RX from the actual path | ✅ | Observer patch on the SDK's `UDP_Port`; the SDK's own automatic traffic is visible |
+| 7 | Known messages decode correctly | ✅ | Dialect CRC and field tables; tlog verified with pymavlink; VIO values match its overlay and identity |
+| 8 | Unknown and invalid traffic handled transparently | ✅ | BAD_CRC / UNKNOWN_ID / TRUNCATED / GARBAGE kept with their raw bytes (`mavlink_frame` test) |
+| 9 | Filter, inspect frames, export logs | ✅ | Filters, details, hex view; CSV, JSON Lines, and tlog export and recording |
+| 10 | Watcher does not block the UI or control traffic | ✅ | Bounded queues; parsing on the GUI timer; files on a writer thread; video and capture on their own threads |
+| 11 | Disconnected hardware and unsupported features handled safely | ✅ | Controls disabled while disconnected; profile-driven options; OFF needs confirmation |
+| 12 | Automated tests for parsing, connection, logging | ✅ | 9 CTest programs, hardware-free |
+| 13 | README covers dependencies, build, configuration, operation, testing, limitations | ✅ | This file |
+
 ## Known limitations
 
 - **Partly tested on hardware:** gimbal OFF, RESET and MAPPING, photo capture, and recording have
@@ -341,14 +382,10 @@ loopback fake payload and checks that `sdkQuit()` returns in under 2 s (measured
   and file path are tested with `.pcap` files written by libpcap.
 - **Video:** there is no recording or snapshot from the app (use the payload's own recording).
   Under WSL2 NAT only TCP transport works.
-
-- **No time-range filter:** the inspector shows the live session only. A log viewer that loads
-  recorded files is not implemented.
-- **XML location:** units and enum names come from `message_definitions/` (override with
-  `MAVLINK_XML_DIR`). The build uses the SDK copy; an installed binary must ship that folder next to
-  it.
-
-- **WSL2 networking:** WSL2 defaults to NAT networking. If replies from the payload do not arrive,
+- **Loading recordings:** `.pcap` files load into the inspector, but the app's own `.tlog` /
+  `.jsonl` recordings do not (open them with pymavlink or a JSON tool). There is no time-range
+  filter.
+- **WSL2 networking:** NAT worked for the VIO over USB-C. If replies from a payload do not arrive,
   enable mirrored networking by adding `networkingMode=mirrored` to `%UserProfile%\.wslconfig`,
   then run `wsl --shutdown`.
 - **SDK `checkPayloadConnection()`** blocks forever. The app does not call it; it judges link state
