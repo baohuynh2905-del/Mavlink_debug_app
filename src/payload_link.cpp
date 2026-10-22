@@ -318,6 +318,89 @@ bool PayloadLink::recordVideo(bool start)
     return true;
 }
 
+bool PayloadLink::trackingMode(int mode)
+{
+    if (!ready()) return false;
+    m_tracker.expect(mode == TrackStop ? QStringLiteral("Tracking: stop") : QStringLiteral("Tracking: activate"),
+                     MAVLINK_MSG_ID_COMMAND_LONG, MAV_CMD_USER_4, {}, nowMs(), [mode](const MavFrame &f) {
+                         return int(mavlink_msg_command_long_get_param1(&f.msg)) == 4 &&
+                                int(mavlink_msg_command_long_get_param3(&f.msg)) == 0 &&
+                                int(mavlink_msg_command_long_get_param4(&f.msg)) == mode;
+                     });
+    m_sdk->setPayloadObjectTrackingMode(float(mode));
+    emit commandsChanged();
+    return true;
+}
+
+bool PayloadLink::trackingTarget(double x, double y, double w, double h)
+{
+    if (!ready()) return false;
+    if (x < 0 || y < 0 || x > kTrackerWidth || y > kTrackerHeight || w <= 0 || h <= 0) {
+        m_commandError = QStringLiteral("Tracking target outside the %1x%2 tracker frame").arg(kTrackerWidth).arg(kTrackerHeight);
+        return false;
+    }
+    m_tracker.expect(QStringLiteral("Track target at %1, %2 (%3x%4)").arg(x, 0, 'f', 0).arg(y, 0, 'f', 0).arg(w).arg(h),
+                     MAVLINK_MSG_ID_COMMAND_LONG, MAV_CMD_USER_4, {}, nowMs(), [](const MavFrame &f) {
+                         return int(mavlink_msg_command_long_get_param1(&f.msg)) == 4 &&
+                                int(mavlink_msg_command_long_get_param3(&f.msg)) == 1;
+                     });
+    m_sdk->setPayloadObjectTrackingPosition(float(x), float(y), float(w), float(h));
+    emit commandsChanged();
+    return true;
+}
+
+bool PayloadLink::trackingStreams()
+{
+    if (!ready()) return false;
+    const qint64 now = nowMs();
+    for (int idx : {PARAM_TRACK_POS_X, PARAM_TRACK_POS_Y, PARAM_TRACK_POS_W, PARAM_TRACK_POS_H, PARAM_TRACK_STATUS}) {
+        m_tracker.expect(QStringLiteral("Stream %1 every 100 ms").arg(payloadParamName(idx)), MAVLINK_MSG_ID_COMMAND_LONG,
+                         MAV_CMD_SET_MESSAGE_INTERVAL, {}, now, [idx](const MavFrame &f) {
+                             return int(mavlink_msg_command_long_get_param1(&f.msg)) == idx;
+                         });
+        m_sdk->setParamRate(idx, 100);
+    }
+    emit commandsChanged();
+    return true;
+}
+
+QString trackingStateText(int mode, int status)
+{
+    // Names from the SDK's setPayloadObjectTrackingMode() comment and tracking example
+    static const char *modes[] = {"STOP", "ACTIVE", "EAGLEEYES"}, *states[] = {"IDLE", "TRACKED", "LOST"};
+    const QString m = mode >= 0 && mode < 3 ? QLatin1String(modes[mode]) : QStringLiteral("mode %1").arg(mode);
+    const QString s = status >= 0 && status < 3 ? QLatin1String(states[status]) : QStringLiteral("status %1").arg(status);
+    return m + QStringLiteral(" / ") + s;
+}
+
+OperatorStatus PayloadLink::operatorStatus(const TelemetryStore &t, qint64 nowNs, int timeoutMs)
+{
+    const qint64 maxAge = qint64(timeoutMs) * 1000000;
+    auto fresh = [&](qint64 sampleNs) { return nowNs - sampleNs <= maxAge; };
+    OperatorStatus s;
+    GimbalAttitude a;
+    if (const CapturedFrame *c = t.latest(MAVLINK_MSG_ID_GIMBAL_DEVICE_ATTITUDE_STATUS); c && fresh(c->monoNs) && gimbalAttitude(c->frame, &a))
+        s.attitude = a;
+    if (const CapturedFrame *c = t.latest(MAVLINK_MSG_ID_CAMERA_CAPTURE_STATUS); c && fresh(c->monoNs)) {
+        if (const auto v = fieldNumber(c->frame, "video_status")) s.recording = *v == 1;
+        s.recordingS = fieldNumber(c->frame, "recording_time_ms").value_or(0) / 1000.0;
+    }
+    const auto &params = t.payloadParams();
+    auto param = [&](int idx) -> std::optional<double> {
+        const auto it = params.constFind(idx);
+        if (it == params.cend() || !fresh(it->monoNs)) return std::nullopt;
+        return it->value;
+    };
+    s.eoZoom = param(PARAM_EO_ZOOM_LEVEL);
+    if (const auto v = param(PARAM_TRACK_STATUS)) {
+        s.trackMode = (int(*v) >> 8) & 0xFF;
+        s.trackStatus = int(*v) & 0xFF;
+    }
+    const auto x = param(PARAM_TRACK_POS_X), y = param(PARAM_TRACK_POS_Y), w = param(PARAM_TRACK_POS_W), h = param(PARAM_TRACK_POS_H);
+    if (x && y && w && h && *w > 0 && *h > 0) s.trackBox = QRectF(*x - *w / 2, *y - *h / 2, *w, *h);
+    return s;
+}
+
 bool PayloadLink::requestPayloadInfo(bool automatic)
 {
     if (!ready()) return false;

@@ -6,7 +6,9 @@
 #include "frame_writer.h"
 #include "mavlink_dict.h"
 #include "pcap_capture.h"
+#include "ui_util.h"
 
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFileDialog>
@@ -43,9 +45,18 @@ InspectorWidget::InspectorWidget(const MavlinkDict *dict, QWidget *parent)
     : QWidget(parent), m_dict(dict), m_model(new FrameModel(100000, this)), m_filter(new FrameFilter(m_model, this)),
       m_capture(new PcapCapture(this))
 {
-    // --- Filter bar ---
-    m_dir = new QComboBox;
-    m_dir->addItems({QStringLiteral("All directions"), QStringLiteral("RX"), QStringLiteral("TX"), QStringLiteral("NET (capture)")});
+    // --- Header strip: title, direction, quick filters, pause ---
+    m_dir = new QButtonGroup(this);
+    auto *dirRow = new QHBoxLayout;
+    dirRow->setSpacing(0);
+    const char *dirs[][2] = {{"ALL", "Every direction"}, {"RX", "Received by this app"}, {"TX", "Sent by this app"},
+                             {"NET", "Other devices' traffic from network capture (Tools)"}};
+    for (int i = 0; i < 4; ++i) {
+        QPushButton *b = button(QLatin1String(dirs[i][0]), QLatin1String(dirs[i][1]), "segment");
+        b->setCheckable(true);
+        m_dir->addButton(b, i);
+        dirRow->addWidget(b);
+    }
     auto byteEdit = [](const QString &tip) {
         auto *e = new QLineEdit;
         e->setValidator(new QIntValidator(0, 255, e));
@@ -60,7 +71,7 @@ InspectorWidget::InspectorWidget(const MavlinkDict *dict, QWidget *parent)
     m_message->setObjectName(QStringLiteral("messageFilter"));
     m_message->setPlaceholderText(QStringLiteral("name or ID"));
     m_message->setToolTip(QStringLiteral("A number matches the message ID exactly; text matches part of the name"));
-    m_message->setMaximumWidth(170);
+    m_message->setMaximumWidth(160);
     m_text = new QLineEdit;
     m_text->setPlaceholderText(QStringLiteral("search decoded values"));
     m_text->setToolTip(QStringLiteral("Case-insensitive search in the decoded field text, e.g. MAV_CMD_ or yaw"));
@@ -68,41 +79,61 @@ InspectorWidget::InspectorWidget(const MavlinkDict *dict, QWidget *parent)
     m_status->addItems({QStringLiteral("Any status"), QStringLiteral("Valid only"),
                         QStringLiteral("Problems (CRC, truncated, junk, send errors)"), QStringLiteral("Unknown ID")});
 
-    auto *filters = new QHBoxLayout;
-    filters->addWidget(m_dir);
-    filters->addWidget(new QLabel(QStringLiteral("Sys")));
-    filters->addWidget(m_sys);
-    filters->addWidget(new QLabel(QStringLiteral("Comp")));
-    filters->addWidget(m_comp);
-    filters->addWidget(new QLabel(QStringLiteral("Message")));
-    filters->addWidget(m_message);
-    filters->addWidget(m_text, 1);
-    filters->addWidget(m_status);
+    m_text->setMaximumWidth(220);
 
-    // --- Actions ---
-    m_pauseBtn = new QPushButton(QStringLiteral("Pause display"));
+    m_pauseBtn = new QPushButton(QStringLiteral("Pause"));
     m_pauseBtn->setObjectName(QStringLiteral("pauseButton"));
     m_pauseBtn->setCheckable(true);
     m_pauseBtn->setToolTip(QStringLiteral("Freezes the table only. Capture, statistics and recording continue."));
+    auto *clearBtn = new QPushButton(QStringLiteral("Clear"));
+    clearBtn->setToolTip(QStringLiteral("Clears the displayed history only; capture continues."));
+    m_statusLabel = new QLabel;
+    m_statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);  // never widens the window
+    m_detailsBtn = new QPushButton(QStringLiteral("Details"));
+    m_detailsBtn->setCheckable(true);
+    m_detailsBtn->setToolTip(QStringLiteral("Decoded fields and annotated hex dump of the selected frame"));
+    m_toolsBtn = new QPushButton(QStringLiteral("Tools"));
+    m_toolsBtn->setCheckable(true);
+    m_toolsBtn->setToolTip(QStringLiteral("System/component and status filters, export, recording, network capture"));
+    m_collapseBtn = new QPushButton;
+    m_collapseBtn->setObjectName(QStringLiteral("monitorCollapse"));
+    m_collapseBtn->setCheckable(true);
+    m_collapseBtn->setToolTip(QStringLiteral("Collapse or expand the monitor (capture continues either way)"));
+    auto *title = new QLabel(QStringLiteral("MAVLINK MONITOR"));
+    title->setObjectName(QStringLiteral("panelTitle"));
+    title->setStyleSheet(QStringLiteral("border: none; padding-left: 2px"));
+
+    auto *header = new QHBoxLayout;
+    header->addWidget(title);
+    header->addLayout(dirRow);
+    header->addWidget(m_message);
+    header->addWidget(m_text, 1);
+    header->addWidget(m_pauseBtn);
+    header->addWidget(clearBtn);
+    header->addWidget(m_statusLabel, 2);
+    header->addWidget(m_detailsBtn);
+    header->addWidget(m_toolsBtn);
+    header->addWidget(m_collapseBtn);
+
+    // --- Tools: the less frequent filters and actions ---
     m_autoScroll = new QCheckBox(QStringLiteral("Auto-scroll"));
     m_autoScroll->setChecked(true);
-    auto *clearBtn = new QPushButton(QStringLiteral("Clear table"));
-    clearBtn->setToolTip(QStringLiteral("Clears the displayed history only; capture continues."));
     auto *exportBtn = new QPushButton(QStringLiteral("Export visible…"));
     exportBtn->setToolTip(QStringLiteral("Writes the rows that pass the current filter (tlog, CSV or JSON Lines)."));
     m_recordBtn = new QPushButton(QStringLiteral("Record…"));
     m_recordBtn->setCheckable(true);
     m_recordBtn->setToolTip(QStringLiteral("Continuously writes every captured frame to a file, unfiltered."));
-    m_statusLabel = new QLabel;
-    m_statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-
     auto *actions = new QHBoxLayout;
-    actions->addWidget(m_pauseBtn);
+    actions->addWidget(new QLabel(QStringLiteral("Sys")));
+    actions->addWidget(m_sys);
+    actions->addWidget(new QLabel(QStringLiteral("Comp")));
+    actions->addWidget(m_comp);
+    actions->addWidget(m_status);
     actions->addWidget(m_autoScroll);
-    actions->addWidget(clearBtn);
+    actions->addStretch();
     actions->addWidget(exportBtn);
     actions->addWidget(m_recordBtn);
-    actions->addWidget(m_statusLabel, 1);
 
     // --- Network capture: other devices' MAVLink (libpcap), shown as NET ---
     m_iface = new QComboBox;
@@ -164,26 +195,46 @@ InspectorWidget::InspectorWidget(const MavlinkDict *dict, QWidget *parent)
     m_hex->setPlaceholderText(QStringLiteral("Select a row to see its raw bytes"));
     m_hex->setMinimumWidth(QFontMetrics(m_hex->font()).horizontalAdvance(QString(76, QLatin1Char('0'))) + 24);
 
-    auto *details = new QSplitter(Qt::Horizontal);
+    auto *details = new QSplitter(Qt::Vertical);
     details->addWidget(m_fields);
     details->addWidget(m_hex);
     details->setStretchFactor(0, 3);
     details->setStretchFactor(1, 2);
-    auto *split = new QSplitter(Qt::Vertical);
+    m_details = details;
+    auto *split = new QSplitter(Qt::Horizontal);
     split->addWidget(m_table);
     split->addWidget(details);
     split->setStretchFactor(0, 3);
     split->setStretchFactor(1, 2);
 
+    m_tools = new QWidget;
+    auto *tl = new QVBoxLayout(m_tools);
+    tl->setContentsMargins(0, 0, 0, 0);
+    tl->addLayout(actions);
+    tl->addLayout(captureBar);
+    m_body = new QWidget;
+    auto *bl = new QVBoxLayout(m_body);
+    bl->setContentsMargins(0, 0, 0, 0);
+    bl->addWidget(m_tools);
+    bl->addWidget(split, 1);
+
     auto *layout = new QVBoxLayout(this);
-    layout->addLayout(filters);
-    layout->addLayout(actions);
-    layout->addLayout(captureBar);
-    layout->addWidget(split, 1);
+    layout->setContentsMargins(8, 2, 8, 6);
+    layout->setSpacing(4);
+    layout->addLayout(header);
+    layout->addWidget(m_body, 1);
 
     // Restore the last filters (validated by the widgets themselves)
     QSettings s;
-    m_dir->setCurrentIndex(qBound(0, s.value(QStringLiteral("inspector/dir")).toInt(), 3));
+    m_dir->button(qBound(0, s.value(QStringLiteral("inspector/dir")).toInt(), 3))->setChecked(true);
+    m_detailsBtn->setChecked(s.value(QStringLiteral("inspector/details"), false).toBool());
+    m_toolsBtn->setChecked(s.value(QStringLiteral("inspector/tools"), false).toBool());
+    m_details->setVisible(m_detailsBtn->isChecked());
+    m_tools->setVisible(m_toolsBtn->isChecked());
+    connect(m_detailsBtn, &QPushButton::toggled, m_details, &QWidget::setVisible);
+    connect(m_toolsBtn, &QPushButton::toggled, m_tools, &QWidget::setVisible);
+    connect(m_collapseBtn, &QPushButton::toggled, this, &InspectorWidget::setCollapsed);
+    setCollapsed(false);
     m_bpf->setText(s.value(QStringLiteral("inspector/bpf"), QStringLiteral("udp or (vlan and udp)")).toString());
     m_status->setCurrentIndex(qBound(0, s.value(QStringLiteral("inspector/status")).toInt(), 3));
     m_message->setText(s.value(QStringLiteral("inspector/message")).toString());
@@ -196,7 +247,7 @@ InspectorWidget::InspectorWidget(const MavlinkDict *dict, QWidget *parent)
     connect(m_filterDelay, &QTimer::timeout, this, &InspectorWidget::applyFilter);
     for (QLineEdit *e : {m_sys, m_comp, m_message, m_text})
         connect(e, &QLineEdit::textChanged, m_filterDelay, qOverload<>(&QTimer::start));
-    connect(m_dir, &QComboBox::currentIndexChanged, this, &InspectorWidget::applyFilter);
+    connect(m_dir, &QButtonGroup::idClicked, this, &InspectorWidget::applyFilter);
     connect(m_status, &QComboBox::currentIndexChanged, this, &InspectorWidget::applyFilter);
 
     connect(m_pauseBtn, &QPushButton::toggled, this, &InspectorWidget::setPaused);
@@ -220,7 +271,9 @@ InspectorWidget::InspectorWidget(const MavlinkDict *dict, QWidget *parent)
 InspectorWidget::~InspectorWidget()
 {
     QSettings s;
-    s.setValue(QStringLiteral("inspector/dir"), m_dir->currentIndex());
+    s.setValue(QStringLiteral("inspector/dir"), m_dir->checkedId());
+    s.setValue(QStringLiteral("inspector/details"), m_detailsBtn->isChecked());
+    s.setValue(QStringLiteral("inspector/tools"), m_toolsBtn->isChecked());
     s.setValue(QStringLiteral("inspector/status"), m_status->currentIndex());
     s.setValue(QStringLiteral("inspector/message"), m_message->text());
     s.setValue(QStringLiteral("inspector/text"), m_text->text());
@@ -246,8 +299,23 @@ void InspectorWidget::addFrames(const std::vector<CapturedFrame> &frames)
     if (m_autoScroll->isChecked()) m_table->scrollToBottom();
 }
 
+void InspectorWidget::setCollapsed(bool collapsed)
+{
+    m_collapseBtn->setChecked(collapsed);
+    m_collapseBtn->setText(collapsed ? QStringLiteral("▴") : QStringLiteral("▾"));
+    if (m_body->isHidden() == collapsed) return;
+    m_body->setHidden(collapsed);
+    const QMargins m = layout()->contentsMargins();
+    setMaximumHeight(collapsed ? m_collapseBtn->sizeHint().height() + m.top() + m.bottom() + 4 : QWIDGETSIZE_MAX);
+    emit collapsedChanged(collapsed);
+}
+
+bool InspectorWidget::isCollapsed() const { return m_body->isHidden(); }
+
 bool InspectorWidget::selectFrame(quint64 frameIndex)
 {
+    setCollapsed(false);
+    m_detailsBtn->setChecked(true);
     m_pauseBtn->setChecked(false);  // resumes via toggled(): the frame may still be held
     for (int r = m_filter->rowCount() - 1; r >= 0; --r) {
         const quint64 idx = m_filter->frameAt(r).index;
@@ -265,7 +333,7 @@ bool InspectorWidget::selectFrame(quint64 frameIndex)
 void InspectorWidget::applyFilter()
 {
     FrameCriteria c;
-    c.dir = m_dir->currentIndex() - 1;
+    c.dir = m_dir->checkedId() - 1;
     c.sysid = m_sys->text().isEmpty() ? -1 : m_sys->text().toInt();
     c.compid = m_comp->text().isEmpty() ? -1 : m_comp->text().toInt();
     c.message = m_message->text().trimmed();
@@ -278,7 +346,7 @@ void InspectorWidget::applyFilter()
 void InspectorWidget::setPaused(bool paused)
 {
     m_paused = paused;
-    m_pauseBtn->setText(paused ? QStringLiteral("Resume display") : QStringLiteral("Pause display"));
+    m_pauseBtn->setText(paused ? QStringLiteral("Resume") : QStringLiteral("Pause"));
     if (!paused) {
         m_model->append(m_held);
         m_held.clear();
@@ -497,20 +565,21 @@ void InspectorWidget::refreshStatus()
                  .arg(cap ? QStringLiteral("Capturing") : QStringLiteral("Done"), m_capture->source().toHtmlEscaped())
                  .arg(m_capture->packets()).arg(m_capture->skipped())
                  .arg(m_capture->dropped() ? QStringLiteral(", <b>%1 dropped</b>").arg(m_capture->dropped()) : QString())
-                 .arg(m_capture->lastError().isEmpty() ? QString() : QStringLiteral(", <span style='color:#c01c28'>%1</span>").arg(m_capture->lastError().toHtmlEscaped()));
+                 .arg(m_capture->lastError().isEmpty() ? QString() : QStringLiteral(", ") + colored(m_capture->lastError().toHtmlEscaped(), Theme::Bad));
     m_captureStatus->setText(cs);
 
     QStringList parts;
-    parts << QStringLiteral("Showing %1 of %2 rows").arg(m_filter->rowCount()).arg(m_model->rowCount());
+    parts << QStringLiteral("%1 / %2 rows").arg(m_filter->rowCount()).arg(m_model->rowCount());
     if (m_model->evicted() || m_heldEvicted)
         parts << QStringLiteral("%1 oldest evicted (limit %2)").arg(m_model->evicted() + m_heldEvicted).arg(m_model->capacity());
-    if (m_paused) parts << QStringLiteral("<b>DISPLAY PAUSED</b>, %1 new frames held, capture continues").arg(m_held.size());
+    if (m_paused) parts << colored(QStringLiteral("<b>PAUSED</b>, %1 frames held, capture continues").arg(m_held.size()), Theme::Warn);
     if (m_recorder) {
-        parts << QStringLiteral("<span style='color:#c01c28'>&#9679;</span> REC %1: %2 frames, %3 KiB%4")
+        parts << colored(QStringLiteral("&#9679;"), Theme::Bad) + QStringLiteral(" REC %1: %2 frames, %3 KiB%4")
                      .arg(QFileInfo(m_recorder->path()).fileName().toHtmlEscaped()).arg(m_recorder->written())
                      .arg(m_recorder->bytes() / 1024)
                      .arg(m_recorder->dropped() ? QStringLiteral(", <b>%1 dropped (disk too slow)</b>").arg(m_recorder->dropped()) : QString());
     }
     if (!m_note.isEmpty()) parts << m_note;
-    m_statusLabel->setText(parts.join(QStringLiteral("  |  ")));
+    m_statusLabel->setText(parts.join(QStringLiteral("  ·  ")));
+    m_statusLabel->setToolTip(m_statusLabel->text());
 }

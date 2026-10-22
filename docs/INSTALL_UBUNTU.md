@@ -88,10 +88,11 @@ or allowing replies) lets the answers back in.
 ./build/mavlink_debug_app
 ```
 
-1. Enter `192.168.55.1`, port `14566`, and click **Connect**. The status should go to **Heartbeat
-   received**, with heartbeats from `1/26, 1/100, 1/154`.
-2. **Video** tab: **Start video**. On native Linux, try both **TCP** and **UDP** transport (only
-   TCP worked under WSL).
+1. In the **SETTINGS** drawer, enter `192.168.55.1` and port `14566`, then click **Connect**. The
+   lamps should go to **PAYLOAD 3/3** and **MAVLINK heartbeat**, with heartbeats from
+   `1/26, 1/100, 1/154`. The drawer closes when the heartbeat arrives; **SETTINGS** reopens it.
+2. **Start video** (title bar of the video). On native Linux, try both **TCP** and **UDP**
+   transport in the SETTINGS drawer (only TCP worked under WSL).
 3. **Profile → Save…** stores the connection for next time.
 
 ## 6. Live network capture (optional)
@@ -104,7 +105,7 @@ the file and drops the capability.
 sudo setcap cap_net_raw,cap_net_admin=eip build/mavlink_debug_app
 ```
 
-Then, in **MAVLink Inspector → Network capture**, pick the interface (for example `any`, or the one
+Then, in **MAVLINK MONITOR → Tools → Network capture**, pick the interface (for example `any`, or the one
 on the drone network) and click **Start capture**.
 
 You only see traffic that reaches this laptop. For other devices' unicast traffic, use a switch
@@ -146,9 +147,13 @@ build/hw_vio_commands --ip 192.168.55.1 --steps camera,angle,rate,mode-param --r
 
 These need an explicit decision, because they change the payload's state or storage:
 
-- **Gimbal modes OFF / RESET / MAPPING:** use the Gimbal tab. OFF asks for confirmation; the camera
+- **Gimbal modes OFF / RESET / MAPPING:** use the gimbal column (Operate view). OFF asks for confirmation; the camera
   is not stabilised while it is off.
-- **Photo capture and video recording:** use the Camera tab. Files are written to the SD card.
+- **Photo capture and video recording:** use the camera column (Operate view). Files are written to
+  the SD card.
+- **Object tracking:** **Arm** in the camera column, then click a target in the video. Arming changes
+  the `TRACK_MODE` parameter, and a tracked target moves the gimbal. Check that the box drawn on the
+  video matches the target: this confirms the 1920×1080 tracker coordinates.
 - **Rate control retest:** with `RC_MODE` = Standard. This is a persistent payload setting; note
   the current value first so it can be restored.
 

@@ -28,7 +28,6 @@
 PayloadPage::PayloadPage(PayloadLink *link, const MavlinkDict *dict, QWidget *parent)
     : QWidget(parent), m_link(link), m_dict(dict), m_error(new QLabel)
 {
-    m_error->setStyleSheet(QStringLiteral("color:#c01c28"));
     m_error->setWordWrap(true);
     auto *t = new QTimer(this);
     connect(t, &QTimer::timeout, this, [this] { refresh(); });
@@ -40,26 +39,21 @@ PayloadPage::PayloadPage(PayloadLink *link, const MavlinkDict *dict, QWidget *pa
     });
 }
 
-void PayloadPage::setPage(QWidget *controls, QWidget *status)
+void PayloadPage::setPage(QWidget *controls, QWidget *status, bool statusFills)
 {
     m_controls = controls;
     m_controls->setEnabled(isOpen(m_link->state()));
-    auto *hint = new QLabel(QStringLiteral("Controls are enabled while connected. Every action is listed on the "
-                                           "<b>Commands</b> tab with its frame and acknowledgement."));
-    hint->setWordWrap(true);
-    auto *l = new QHBoxLayout(this);
-    auto *left = new QVBoxLayout;
-    left->addWidget(controls);
-    left->addWidget(m_error);
-    left->addWidget(hint);
-    left->addStretch();
-    l->addLayout(left, 3);
-    l->addWidget(status, 2);
+    auto *l = new QVBoxLayout(this);
+    l->setContentsMargins(8, 4, 8, 8);
+    l->addWidget(controls);
+    l->addWidget(m_error);
+    l->addWidget(status, statusFills ? 1 : 0);
+    if (!statusFills) l->addStretch();
 }
 
 void PayloadPage::report(bool ok)
 {
-    m_error->setText(ok ? QString() : m_link->commandError());
+    m_error->setText(ok ? QString() : colored(m_link->commandError().toHtmlEscaped(), Theme::Bad));
 }
 
 qint64 PayloadPage::now() const { return PayloadLink::monoNs(); }
@@ -81,12 +75,14 @@ GimbalPage::GimbalPage(PayloadLink *link, const MavlinkDict *dict, const Payload
     // Mode: PARAM_EXT_SET GB_MODE (Mavlink_Command_List "Set gimbal mode"). The SDK's newer route
     // (flags in GIMBAL_DEVICE_SET_ATTITUDE) had no effect on a VIO running software 3.1.4.18.
     auto *modes = new QGridLayout;
-    int col = 0;
+    int i = 0;
     for (const ParamOption &o : m_profile.gimbalModes) {
         const QString name = QString::fromLatin1(o.label);
         const bool off = name == QLatin1String("OFF");
         QPushButton *b = button(off ? QStringLiteral("OFF…") : name,
-                                QStringLiteral("PARAM_EXT_SET %1 = %2").arg(QLatin1String(m_profile.gimbalModeId)).arg(o.value));
+                                QStringLiteral("PARAM_EXT_SET %1 = %2. Confirmed by PARAM_EXT_ACK; the mode the gimbal reports "
+                                               "(GB_MODE) is highlighted.").arg(QLatin1String(m_profile.gimbalModeId)).arg(o.value),
+                                off ? "danger" : nullptr);
         connect(b, &QPushButton::clicked, this, [this, name, off, v = o.value] {
             if (off && QMessageBox::question(this, QStringLiteral("Gimbal OFF"),
                                              QStringLiteral("Switch the gimbal to OFF? The camera will not be stabilised "
@@ -94,45 +90,11 @@ GimbalPage::GimbalPage(PayloadLink *link, const MavlinkDict *dict, const Payload
                 return;
             report(m_link->cameraParam(QStringLiteral("Gimbal mode ") + name, m_profile.gimbalModeId, v));
         });
-        modes->addWidget(b, 0, col++);
+        modes->addWidget(b, i / 3, i % 3);
+        m_modeButtons.emplace_back(o.value, b);
+        ++i;
     }
     if (!m_profile.gimbalModeId) modes->addWidget(new QLabel(QStringLiteral("Gimbal modes not supported by this profile")), 0, 0);
-    auto *modeNote = new QLabel(QStringLiteral("Confirmed by PARAM_EXT_ACK and by the gimbal's reported flags and GB_MODE "
-                                               "parameter (status on the right)."));
-    modeNote->setWordWrap(true);
-    modes->addWidget(modeNote, 1, 0, 1, std::max(col, 1));
-
-    // Angle
-    auto spin = [](double limit, const QString &suffix) {
-        auto *s = new QDoubleSpinBox;
-        s->setRange(-limit, limit);
-        s->setDecimals(1);
-        s->setSuffix(suffix);
-        return s;
-    };
-    m_pitch = spin(PayloadLink::kPitchLimit, QStringLiteral("°"));
-    m_roll = spin(PayloadLink::kRollLimit, QStringLiteral("°"));
-    m_yaw = spin(PayloadLink::kYawLimit, QStringLiteral("°"));
-    QPushButton *move = button(QStringLiteral("Move to angle"));
-    connect(move, &QPushButton::clicked, this, [this] {
-        const bool ok = m_link->gimbalAngle(m_pitch->value(), m_roll->value(), m_yaw->value());
-        report(ok);
-        if (ok) {
-            m_haveCommand = true;
-            m_cmdPitch = m_pitch->value();
-            m_cmdYaw = m_yaw->value();
-            m_commanded->setText(QStringLiteral("pitch %1, roll %2, yaw %3")
-                                     .arg(deg(m_pitch->value()), deg(m_roll->value()), deg(m_yaw->value())));
-        }
-    });
-    auto *angle = new QFormLayout;
-    angle->addRow(QStringLiteral("Pitch (±90°)"), m_pitch);
-    angle->addRow(QStringLiteral("Roll (±180°)"), m_roll);
-    angle->addRow(QStringLiteral("Yaw (±180°)"), m_yaw);
-    angle->addRow(move);
-    auto *limits = new QLabel(QStringLiteral("Limits are the ones PayloadSdkInterface::setGimbalSpeed() enforces."));
-    limits->setWordWrap(true);
-    angle->addRow(limits);
 
     // Rate: hold to move, re-sent every 100 ms like Gremsy's ui_demo, zero on release
     m_speed = new QDoubleSpinBox;
@@ -150,53 +112,109 @@ GimbalPage::GimbalPage(PayloadLink *link, const MavlinkDict *dict, const Payload
         }
         m_link->gimbalRate(m_ratePitch, 0, m_rateYaw, false);
     });
-    auto *rate = new QGridLayout;
-    rate->addWidget(holdButton(QStringLiteral("▲ Pitch up"), 1, 0), 0, 1);
-    rate->addWidget(holdButton(QStringLiteral("◀ Yaw left"), 0, -1), 1, 0);
-    QPushButton *stop = button(QStringLiteral("Stop"), QStringLiteral("Sends zero rate"));
+    auto *pad = new QGridLayout;
+    pad->setSpacing(4);
+    pad->addWidget(holdButton(QStringLiteral("▲"), QStringLiteral("Pitch up"), 1, 0), 0, 1);
+    pad->addWidget(holdButton(QStringLiteral("◀"), QStringLiteral("Yaw left"), 0, -1), 1, 0);
+    QPushButton *stop = button(QStringLiteral("■"), QStringLiteral("Stop: sends zero rate"), "pad");
     connect(stop, &QPushButton::clicked, this, [this] { stopRate(true); });
-    rate->addWidget(stop, 1, 1);
-    rate->addWidget(holdButton(QStringLiteral("Yaw right ▶"), 0, 1), 1, 2);
-    rate->addWidget(holdButton(QStringLiteral("▼ Pitch down"), -1, 0), 2, 1);
-    rate->addWidget(new QLabel(QStringLiteral("Speed")), 3, 0);
-    rate->addWidget(m_speed, 3, 1, 1, 2);
+    pad->addWidget(stop, 1, 1);
+    pad->addWidget(holdButton(QStringLiteral("▶"), QStringLiteral("Yaw right"), 0, 1), 1, 2);
+    pad->addWidget(holdButton(QStringLiteral("▼"), QStringLiteral("Pitch down"), -1, 0), 2, 1);
+    auto *padRow = new QHBoxLayout;
+    padRow->addStretch();
+    padRow->addLayout(pad);
+    padRow->addStretch();
+    auto *speedRow = new QHBoxLayout;
+    speedRow->addWidget(new QLabel(QStringLiteral("Speed")));
+    speedRow->addWidget(m_speed, 1);
+    auto *rate = new QVBoxLayout;
+    rate->addLayout(padRow);
+    rate->addLayout(speedRow);
+
+    // Angle
+    auto spin = [](double limit, const QString &suffix) {
+        auto *s = new QDoubleSpinBox;
+        s->setRange(-limit, limit);
+        s->setDecimals(1);
+        s->setSuffix(suffix);
+        return s;
+    };
+    m_pitch = spin(PayloadLink::kPitchLimit, QStringLiteral("°"));
+    m_roll = spin(PayloadLink::kRollLimit, QStringLiteral("°"));
+    m_yaw = spin(PayloadLink::kYawLimit, QStringLiteral("°"));
+    QPushButton *move = button(QStringLiteral("Move to angle"),
+                               QStringLiteral("GIMBAL_DEVICE_SET_ATTITUDE. It has no ACK: the measured attitude confirms it. "
+                                              "Limits are the ones PayloadSdkInterface::setGimbalSpeed() enforces."), "primary");
+    connect(move, &QPushButton::clicked, this, [this] {
+        const bool ok = m_link->gimbalAngle(m_pitch->value(), m_roll->value(), m_yaw->value());
+        report(ok);
+        if (ok) {
+            m_haveCommand = true;
+            m_cmdPitch = m_pitch->value();
+            m_cmdYaw = m_yaw->value();
+            m_commanded->setText(QStringLiteral("pitch %1, roll %2, yaw %3")
+                                     .arg(deg(m_pitch->value()), deg(m_roll->value()), deg(m_yaw->value())));
+        }
+    });
+    auto *angle = new QFormLayout;
+    angle->addRow(QStringLiteral("Pitch (±90°)"), m_pitch);
+    angle->addRow(QStringLiteral("Roll (±180°)"), m_roll);
+    angle->addRow(QStringLiteral("Yaw (±180°)"), m_yaw);
+    angle->addRow(move);
 
     auto *controls = new QWidget;
     auto *cl = new QVBoxLayout(controls);
     cl->setContentsMargins(0, 0, 0, 0);
-    cl->addWidget(group(QStringLiteral("Mode"), modes));
-    cl->addWidget(group(QStringLiteral("Move to angle"), angle));
-    cl->addWidget(group(QStringLiteral("Move by rate (hold)"), rate));
+    cl->addWidget(group(QStringLiteral("MODE"), modes));
+    cl->addWidget(group(QStringLiteral("MOVE (HOLD)"), rate));
+    cl->addWidget(group(QStringLiteral("POINT TO ANGLE"), angle));
 
     // Measured
-    m_commanded = new QLabel(QStringLiteral("<span style='color:#888'>no angle command yet</span>"));
+    auto *tiles = new QHBoxLayout;
+    const char *names[3] = {"PITCH", "ROLL", "YAW"};
+    for (int k = 0; k < 3; ++k) {
+        auto *caption = new QLabel(QString::fromLatin1(names[k]));
+        caption->setObjectName(QStringLiteral("readoutCaption"));
+        caption->setAlignment(Qt::AlignCenter);
+        m_readout[k] = new QLabel;
+        m_readout[k]->setObjectName(QStringLiteral("readout"));
+        m_readout[k]->setFont(monoFont(14));
+        m_readout[k]->setAlignment(Qt::AlignCenter);
+        auto *col = new QVBoxLayout;
+        col->setSpacing(2);
+        col->addWidget(caption);
+        col->addWidget(m_readout[k]);
+        tiles->addLayout(col);
+    }
+    m_commanded = new QLabel(colored(QStringLiteral("no angle command yet"), Theme::Dim));
     m_attitude = valueLabel();
     m_rates = valueLabel();
     m_mode = valueLabel();
     m_flags = valueLabel();
     m_failures = valueLabel();
     m_delta = valueLabel();
-    m_flags->setWordWrap(true);
-    m_failures->setWordWrap(true);
+    for (QLabel *l : {m_commanded, m_attitude, m_rates, m_mode, m_flags, m_failures, m_delta}) l->setWordWrap(true);
     auto *meas = new QFormLayout;
-    meas->addRow(QStringLiteral("Last commanded"), m_commanded);
-    meas->addRow(QStringLiteral("Measured attitude"), m_attitude);
-    meas->addRow(QStringLiteral("Measured − commanded"), m_delta);
-    meas->addRow(QStringLiteral("Angular rate"), m_rates);
+    meas->setRowWrapPolicy(QFormLayout::WrapLongRows);  // long flag names go under their label in the narrow column
+    meas->addRow(tiles);
+    meas->addRow(QStringLiteral("Source"), m_attitude);
+    meas->addRow(QStringLiteral("Commanded"), m_commanded);
+    meas->addRow(QStringLiteral("Measured − cmd"), m_delta);
+    meas->addRow(QStringLiteral("Rate"), m_rates);
     meas->addRow(QStringLiteral("Mode (flags / GB_MODE)"), m_mode);
     meas->addRow(QStringLiteral("Flags"), m_flags);
     meas->addRow(QStringLiteral("Failure flags"), m_failures);
-    auto *note = new QLabel(QStringLiteral("Measured values come from GIMBAL_DEVICE_ATTITUDE_STATUS. GIMBAL_DEVICE_SET_ATTITUDE has "
-                                           "no acknowledgement, so this telemetry is the only confirmation. Yaw is in the frame "
-                                           "given by the flags (vehicle or earth)."));
-    note->setWordWrap(true);
-    meas->addRow(note);
-    setPage(controls, group(QStringLiteral("Gimbal telemetry"), meas));
+    QGroupBox *status = group(QStringLiteral("GIMBAL TELEMETRY"), meas);
+    status->setToolTip(QStringLiteral("Measured values come from GIMBAL_DEVICE_ATTITUDE_STATUS. GIMBAL_DEVICE_SET_ATTITUDE has "
+                                      "no acknowledgement, so this telemetry is the only confirmation. Yaw is in the frame "
+                                      "given by the flags (vehicle or earth)."));
+    setPage(controls, status);
 }
 
-QPushButton *GimbalPage::holdButton(const QString &text, double pitchSign, double yawSign)
+QPushButton *GimbalPage::holdButton(const QString &text, const QString &tip, double pitchSign, double yawSign)
 {
-    QPushButton *b = button(text, QStringLiteral("Hold to move; released = zero rate"));
+    QPushButton *b = button(text, tip + QStringLiteral(" (hold to move; release = zero rate)"), "pad");
     connect(b, &QPushButton::pressed, this, [this, b, pitchSign, yawSign] {
         m_held = b;
         m_ratePitch = pitchSign * m_speed->value();
@@ -228,26 +246,33 @@ void GimbalPage::linkChanged()
 
 void GimbalPage::refresh()
 {
-    const CapturedFrame *c = m_link->telemetry().latest(MAVLINK_MSG_ID_GIMBAL_DEVICE_ATTITUDE_STATUS);
     const int to = m_link->timeoutMs();
-    GimbalAttitude a;
-    if (!c || !gimbalAttitude(c->frame, &a)) {
-        for (QLabel *l : {m_attitude, m_rates, m_mode, m_flags, m_failures, m_delta}) l->setText(agedValue({}, -1, 0, to));
-        return;
-    }
-    const qint64 t = c->monoNs, n = now();
-    m_attitude->setText(agedValue(QStringLiteral("pitch %1, roll %2, yaw %3  (from %4/%5)")
-                                      .arg(deg(a.pitchDeg), deg(a.rollDeg), deg(a.yawDeg)).arg(c->frame.sysid).arg(c->frame.compid),
-                                  t, n, to));
-    m_rates->setText(agedValue(QStringLiteral("x %1/s, y %2/s, z %3/s").arg(deg(a.rateX), deg(a.rateY), deg(a.rateZ)), t, n, to));
-    QString gbMode = QStringLiteral("not received");
+    const qint64 n = now();
     const auto &params = m_link->telemetry().payloadParams();
+    QString gbMode = QStringLiteral("not received");
+    int gbValue = -1;
     for (auto it = params.cbegin(); it != params.cend(); ++it) {
         if (PayloadLink::payloadParamName(it.key()) != QLatin1String("GB_MODE")) continue;
         gbMode = QString::number(it->value);
+        if (n - it->monoNs <= qint64(to) * 1000000) gbValue = int(it->value);
         for (const ParamOption &o : m_profile.gimbalModes)
             if (o.value == unsigned(it->value)) gbMode = QLatin1String(o.label);
     }
+    for (const auto &[value, b] : m_modeButtons) setStyleFlag(b, "active", gbValue >= 0 && unsigned(gbValue) == value);
+
+    const CapturedFrame *c = m_link->telemetry().latest(MAVLINK_MSG_ID_GIMBAL_DEVICE_ATTITUDE_STATUS);
+    GimbalAttitude a;
+    if (!c || !gimbalAttitude(c->frame, &a)) {
+        for (QLabel *l : {m_attitude, m_rates, m_mode, m_flags, m_failures, m_delta}) l->setText(agedValue({}, -1, 0, to));
+        for (QLabel *l : m_readout) l->setText(colored(QStringLiteral("—"), Theme::Dim));
+        return;
+    }
+    const qint64 t = c->monoNs;
+    const bool stale = n - t > qint64(to) * 1000000;
+    const double v[3] = {a.pitchDeg, a.rollDeg, a.yawDeg};
+    for (int k = 0; k < 3; ++k) m_readout[k]->setText(stale ? colored(deg(v[k]), Theme::Dim) : deg(v[k]));
+    m_attitude->setText(agedValue(QStringLiteral("%1/%2").arg(c->frame.sysid).arg(c->frame.compid), t, n, to));
+    m_rates->setText(agedValue(QStringLiteral("x %1/s, y %2/s, z %3/s").arg(deg(a.rateX), deg(a.rateY), deg(a.rateZ)), t, n, to));
     m_mode->setText(agedValue(QStringLiteral("%1 / %2").arg(GimbalFlags::modeName(a.flags), gbMode), t, n, to));
     QString flags;
     if (const MavlinkDict::Field *f = m_dict ? m_dict->field(MAVLINK_MSG_ID_GIMBAL_DEVICE_ATTITUDE_STATUS, QStringLiteral("flags")) : nullptr)
@@ -260,9 +285,9 @@ void GimbalPage::refresh()
         if (const MavlinkDict::Field *f = m_dict ? m_dict->field(MAVLINK_MSG_ID_GIMBAL_DEVICE_ATTITUDE_STATUS, QStringLiteral("failure_flags")) : nullptr)
             fail += QStringLiteral("  ") + m_dict->label(*f, a.failureFlags);
     }
-    m_failures->setText(agedValue(fail, t, n, to));
+    m_failures->setText(a.failureFlags && !stale ? colored(fail.toHtmlEscaped(), Theme::Bad) : agedValue(fail, t, n, to));
     m_delta->setText(m_haveCommand ? agedValue(QStringLiteral("pitch %1, yaw %2").arg(deg(a.pitchDeg - m_cmdPitch), deg(a.yawDeg - m_cmdYaw)), t, n, to)
-                                   : QStringLiteral("<span style='color:#888'>no angle command yet</span>"));
+                                   : colored(QStringLiteral("no angle command yet"), Theme::Dim));
 }
 
 // --- Camera ----------------------------------------------------------------------------------
@@ -270,22 +295,81 @@ void GimbalPage::refresh()
 CameraPage::CameraPage(PayloadLink *link, const MavlinkDict *dict, const PayloadProfile &profile, QWidget *parent)
     : PayloadPage(link, dict, parent), m_profile(profile)
 {
-    auto *capture = new QGridLayout;
+    QPushButton *shot = button(QStringLiteral("◉  PHOTO"), QStringLiteral("MAV_CMD_IMAGE_START_CAPTURE, single image (saved on the payload's SD card)"), "primary");
+    m_recBtn = button(QStringLiteral("●  REC"), QStringLiteral("MAV_CMD_VIDEO_START_CAPTURE (records on the payload's SD card). "
+                                                             "Lit while CAMERA_CAPTURE_STATUS reports recording."), "danger");
+    QPushButton *recStop = button(QStringLiteral("■  STOP"), QStringLiteral("MAV_CMD_VIDEO_STOP_CAPTURE"));
     QPushButton *photoMode = button(QStringLiteral("Photo mode"), QStringLiteral("MAV_CMD_SET_CAMERA_MODE, CAMERA_MODE_IMAGE"));
     QPushButton *videoMode = button(QStringLiteral("Video mode"), QStringLiteral("MAV_CMD_SET_CAMERA_MODE, CAMERA_MODE_VIDEO"));
-    QPushButton *shot = button(QStringLiteral("Capture photo"), QStringLiteral("MAV_CMD_IMAGE_START_CAPTURE, single image"));
-    QPushButton *recStart = button(QStringLiteral("Start recording"), QStringLiteral("MAV_CMD_VIDEO_START_CAPTURE"));
-    QPushButton *recStop = button(QStringLiteral("Stop recording"), QStringLiteral("MAV_CMD_VIDEO_STOP_CAPTURE"));
+    for (QPushButton *b : {shot, m_recBtn, recStop}) b->setMinimumHeight(38);
     connect(photoMode, &QPushButton::clicked, this, [this] { report(m_link->cameraMode(CAMERA_MODE_IMAGE)); });
     connect(videoMode, &QPushButton::clicked, this, [this] { report(m_link->cameraMode(CAMERA_MODE_VIDEO)); });
     connect(shot, &QPushButton::clicked, this, [this] { report(m_link->captureImage()); });
-    connect(recStart, &QPushButton::clicked, this, [this] { report(m_link->recordVideo(true)); });
+    connect(m_recBtn, &QPushButton::clicked, this, [this] { report(m_link->recordVideo(true)); });
     connect(recStop, &QPushButton::clicked, this, [this] { report(m_link->recordVideo(false)); });
-    capture->addWidget(photoMode, 0, 0);
-    capture->addWidget(videoMode, 0, 1);
-    capture->addWidget(shot, 1, 0);
-    capture->addWidget(recStart, 1, 1);
-    capture->addWidget(recStop, 1, 2);
+    auto *capture = new QGridLayout;
+    capture->addWidget(shot, 0, 0);
+    capture->addWidget(m_recBtn, 0, 1);
+    capture->addWidget(recStop, 0, 2);
+    capture->addWidget(photoMode, 1, 0);
+    capture->addWidget(videoMode, 1, 1);
+
+    // Zoom and focus (MAVLink semantics: -1 wide/near, +1 tele/far, 0 stop)
+    m_zoomReadout = new QLabel;
+    m_zoomReadout->setObjectName(QStringLiteral("readout"));
+    m_zoomReadout->setFont(monoFont(12));
+    m_zoomReadout->setAlignment(Qt::AlignCenter);
+    m_zoomReadout->setToolTip(QStringLiteral("EO_ZOOM, as the payload reports it in its DEBUG parameter stream"));
+    auto *optics = new QGridLayout;
+    optics->addWidget(holdButton(QStringLiteral("Zoom −"), QStringLiteral("ZOOM_TYPE_CONTINUOUS -1 (wide) while held, 0 on release"), true, -1), 0, 0);
+    optics->addWidget(holdButton(QStringLiteral("Zoom +"), QStringLiteral("ZOOM_TYPE_CONTINUOUS +1 (tele) while held, 0 on release"), true, 1), 0, 1);
+    optics->addWidget(m_zoomReadout, 0, 2);
+    m_zoomRange = new QSlider(Qt::Horizontal);
+    m_zoomRange->setRange(0, 100);
+    QPushButton *zoomTo = button(QStringLiteral("Go 0%"), QStringLiteral("ZOOM_TYPE_RANGE: percentage of the full zoom range"));
+    connect(m_zoomRange, &QSlider::valueChanged, zoomTo, [zoomTo](int v) { zoomTo->setText(QStringLiteral("Go %1%").arg(v)); });
+    connect(zoomTo, &QPushButton::clicked, this, [this] {
+        report(m_link->cameraZoom(ZOOM_TYPE_RANGE, float(m_zoomRange->value()), QStringLiteral("Zoom to %1%").arg(m_zoomRange->value())));
+    });
+    optics->addWidget(m_zoomRange, 1, 0, 1, 2);
+    optics->addWidget(zoomTo, 1, 2);
+    optics->addWidget(holdButton(QStringLiteral("Focus near"), QStringLiteral("FOCUS_TYPE_CONTINUOUS -1 while held (the SDK's enum calls -1 FOCUS_OUT)"), false, -1), 2, 0);
+    optics->addWidget(holdButton(QStringLiteral("Focus far"), QStringLiteral("FOCUS_TYPE_CONTINUOUS +1 while held (the SDK's enum calls +1 FOCUS_IN)"), false, 1), 2, 1);
+    QPushButton *af = button(QStringLiteral("Auto focus"), QStringLiteral("FOCUS_TYPE_AUTO"));
+    connect(af, &QPushButton::clicked, this, [this] { report(m_link->cameraFocus(FOCUS_TYPE_AUTO, 0, QStringLiteral("Auto focus"))); });
+    optics->addWidget(af, 2, 2);
+    for (int c = 0; c < 3; ++c) optics->setColumnStretch(c, 1);
+
+    // Object tracking, as in the SDK's payload_do_object_tracking example
+    auto *tracking = new QGridLayout;
+    if (!m_profile.trackingModeId) {
+        tracking->addWidget(new QLabel(QStringLiteral("Tracking not supported by %1").arg(QLatin1String(m_profile.name))), 0, 0);
+    } else {
+        m_armBtn = button(QStringLiteral("Arm"), QStringLiteral("Selects object tracking (PARAM_EXT_SET %1), starts the TRK_* parameter "
+                                                                "streams and activates the tracker (MAV_CMD_USER_4). Then click the "
+                                                                "video to pick a target; the gimbal follows it.")
+                                                     .arg(QLatin1String(m_profile.trackingModeId)), "primary");
+        m_centreBtn = button(QStringLiteral("Track centre"), QStringLiteral("Track the object in the centre of the picture"));
+        m_centreBtn->setEnabled(false);
+        QPushButton *release = button(QStringLiteral("Release"), QStringLiteral("Stops tracking (MAV_CMD_USER_4, mode 0)"));
+        connect(m_armBtn, &QPushButton::clicked, this, [this] {
+            const bool ok = m_link->cameraParam(QStringLiteral("Tracking mode: object"), m_profile.trackingModeId, m_profile.trackingObjectMode) &&
+                            m_link->trackingStreams() && m_link->trackingMode(PayloadLink::TrackActive);
+            report(ok);
+            if (ok) setTrackArmed(true);
+        });
+        connect(m_centreBtn, &QPushButton::clicked, this, [this] { trackAt(QPointF(0.5, 0.5)); });
+        connect(release, &QPushButton::clicked, this, [this] {
+            report(m_link->trackingMode(PayloadLink::TrackStop));
+            setTrackArmed(false);
+        });
+        m_track = valueLabel();
+        m_track->setWordWrap(true);
+        tracking->addWidget(m_armBtn, 0, 0);
+        tracking->addWidget(m_centreBtn, 0, 1);
+        tracking->addWidget(release, 0, 2);
+        tracking->addWidget(m_track, 1, 0, 1, 3);
+    }
 
     // Settings: sent only on a user choice (activated), never when the combo is refreshed
     auto *settings = new QFormLayout;
@@ -303,57 +387,60 @@ CameraPage::CameraPage(PayloadLink *link, const MavlinkDict *dict, const Payload
                 report(m_link->cameraParam(label, id, cb->itemData(i).toUInt()));
             });
         }
+        cb->setMinimumContentsLength(8);
+        cb->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);  // fits the side column
         settings->addRow(label, cb);
     };
     addParam(QStringLiteral("View source"), m_profile.viewSourceId, m_profile.viewSources);
     addParam(QStringLiteral("Record source"), m_profile.recordSourceId, m_profile.recordSources);
     addParam(QStringLiteral("IR palette"), m_profile.irPaletteId, m_profile.irPalettes);
 
-    // Zoom and focus (MAVLink semantics: -1 wide/near, +1 tele/far, 0 stop)
-    auto *optics = new QGridLayout;
-    optics->addWidget(holdButton(QStringLiteral("Zoom out (wide)"), QStringLiteral("ZOOM_TYPE_CONTINUOUS -1 while held, 0 on release"), true, -1), 0, 0);
-    optics->addWidget(holdButton(QStringLiteral("Zoom in (tele)"), QStringLiteral("ZOOM_TYPE_CONTINUOUS +1 while held, 0 on release"), true, 1), 0, 1);
-    m_zoomRange = new QSlider(Qt::Horizontal);
-    m_zoomRange->setRange(0, 100);
-    QPushButton *zoomTo = button(QStringLiteral("Zoom to 0%"), QStringLiteral("ZOOM_TYPE_RANGE: percentage of the full zoom range"));
-    connect(m_zoomRange, &QSlider::valueChanged, zoomTo, [zoomTo](int v) { zoomTo->setText(QStringLiteral("Zoom to %1%").arg(v)); });
-    connect(zoomTo, &QPushButton::clicked, this, [this] {
-        report(m_link->cameraZoom(ZOOM_TYPE_RANGE, float(m_zoomRange->value()), QStringLiteral("Zoom to %1%").arg(m_zoomRange->value())));
-    });
-    optics->addWidget(m_zoomRange, 1, 0, 1, 2);
-    optics->addWidget(zoomTo, 1, 2);
-    optics->addWidget(holdButton(QStringLiteral("Focus near"), QStringLiteral("FOCUS_TYPE_CONTINUOUS -1 while held (the SDK's enum calls -1 FOCUS_OUT)"), false, -1), 2, 0);
-    optics->addWidget(holdButton(QStringLiteral("Focus far"), QStringLiteral("FOCUS_TYPE_CONTINUOUS +1 while held (the SDK's enum calls +1 FOCUS_IN)"), false, 1), 2, 1);
-    QPushButton *af = button(QStringLiteral("Auto focus"), QStringLiteral("FOCUS_TYPE_AUTO"));
-    connect(af, &QPushButton::clicked, this, [this] { report(m_link->cameraFocus(FOCUS_TYPE_AUTO, 0, QStringLiteral("Auto focus"))); });
-    optics->addWidget(af, 2, 2);
-    for (int c = 0; c < 3; ++c) optics->setColumnStretch(c, 1);
-
     auto *controls = new QWidget;
     auto *cl = new QVBoxLayout(controls);
     cl->setContentsMargins(0, 0, 0, 0);
-    cl->addWidget(group(QStringLiteral("Capture (%1)").arg(QLatin1String(m_profile.name)), capture));
-    cl->addWidget(group(QStringLiteral("Settings"), settings));
-    cl->addWidget(group(QStringLiteral("Zoom and focus"), optics));
+    cl->addWidget(group(QStringLiteral("CAPTURE (%1)").arg(QLatin1String(m_profile.name)), capture));
+    cl->addWidget(group(QStringLiteral("ZOOM / FOCUS"), optics));
+    cl->addWidget(group(QStringLiteral("TRACKING"), tracking));
+    cl->addWidget(group(QStringLiteral("SETTINGS"), settings));
 
     m_capture = valueLabel();
     m_video = valueLabel();
     m_storage = valueLabel();
     m_settings = valueLabel();
     m_reported = valueLabel();
-    m_reported->setWordWrap(true);
+    for (QLabel *l : {m_capture, m_video, m_storage, m_settings, m_reported}) l->setWordWrap(true);
     auto *st = new QFormLayout;
+    st->setRowWrapPolicy(QFormLayout::WrapLongRows);
     st->addRow(QStringLiteral("Image capture"), m_capture);
     st->addRow(QStringLiteral("Video"), m_video);
     st->addRow(QStringLiteral("Storage"), m_storage);
-    st->addRow(QStringLiteral("Camera settings"), m_settings);
+    st->addRow(QStringLiteral("Settings"), m_settings);
     st->addRow(QStringLiteral("Payload reports"), m_reported);
-    auto *note = new QLabel(QStringLiteral("Values are read back from CAMERA_CAPTURE_STATUS, STORAGE_INFORMATION, CAMERA_SETTINGS "
-                                           "and the payload's DEBUG parameter stream. They are sent on request "
-                                           "(Telemetry tab) or by the payload itself."));
-    note->setWordWrap(true);
-    st->addRow(note);
-    setPage(controls, group(QStringLiteral("Camera status"), st));
+    QGroupBox *status = group(QStringLiteral("CAMERA STATUS"), st);
+    status->setToolTip(QStringLiteral("Values are read back from CAMERA_CAPTURE_STATUS, STORAGE_INFORMATION, CAMERA_SETTINGS "
+                                      "and the payload's DEBUG parameter stream. They are sent on request "
+                                      "(Analyze › Telemetry) or by the payload itself."));
+    setPage(controls, status);
+}
+
+void CameraPage::setTrackArmed(bool armed)
+{
+    if (armed == m_trackArmed) return;
+    m_trackArmed = armed;
+    if (m_centreBtn) m_centreBtn->setEnabled(armed);
+    if (m_armBtn) setStyleFlag(m_armBtn, "active", armed);
+    emit trackArmedChanged(armed);
+}
+
+void CameraPage::linkChanged()
+{
+    if (!isOpen(m_link->state())) setTrackArmed(false);
+}
+
+void CameraPage::trackAt(QPointF pos)
+{
+    if (!m_trackArmed) return;  // a position sent without an active tracker moves the gimbal (SDK: "EagleEyes")
+    report(m_link->trackingTarget(pos.x() * PayloadLink::kTrackerWidth, pos.y() * PayloadLink::kTrackerHeight));
 }
 
 QPushButton *CameraPage::holdButton(const QString &text, const QString &tip, bool zoom, int direction)
@@ -428,6 +515,23 @@ void CameraPage::refresh()
         newest = std::max(newest, it->monoNs);
     }
     m_reported->setText(agedValue(parts.join(QStringLiteral(", ")), parts.isEmpty() ? -1 : newest, n, to));
+
+    const OperatorStatus o = m_link->operatorStatus();
+    m_zoomReadout->setText(o.eoZoom ? QStringLiteral("%1×").arg(*o.eoZoom, 0, 'f', 1) : colored(QStringLiteral("—"), Theme::Dim));
+    const bool rec = o.recording.value_or(false);
+    setStyleFlag(m_recBtn, "active", rec);
+    m_recBtn->setText(rec ? QStringLiteral("●  REC %1").arg(clockText(o.recordingS)) : QStringLiteral("●  REC"));
+    if (m_track) {
+        QString t = o.trackStatus ? colored(trackingStateText(*o.trackMode, *o.trackStatus).toHtmlEscaped(),
+                                            *o.trackStatus == PayloadLink::TrackTracked ? Theme::Ok
+                                            : *o.trackStatus == PayloadLink::TrackLost ? Theme::Bad : Theme::Text)
+                                  : colored(QStringLiteral("no TRK_STATUS received (the streams start on Arm)"), Theme::Dim);
+        if (o.trackBox)
+            t += colored(QStringLiteral(" · target %1, %2 (%3×%4)").arg(o.trackBox->center().x(), 0, 'f', 0).arg(o.trackBox->center().y(), 0, 'f', 0)
+                             .arg(o.trackBox->width(), 0, 'f', 0).arg(o.trackBox->height(), 0, 'f', 0), Theme::Dim);
+        if (m_trackArmed) t += QStringLiteral("<br>") + colored(QStringLiteral("ARMED: click the video to pick a target"), Theme::Accent);
+        m_track->setText(t);
+    }
 }
 
 // --- Telemetry -------------------------------------------------------------------------------
@@ -451,18 +555,19 @@ TelemetryPage::TelemetryPage(PayloadLink *link, const MavlinkDict *dict, QWidget
     auto *controls = new QWidget;
     auto *cl = new QVBoxLayout(controls);
     cl->setContentsMargins(0, 0, 0, 0);
-    cl->addWidget(group(QStringLiteral("Device"), dev));
+    cl->addWidget(group(QStringLiteral("DEVICE"), dev));
 
     m_params = new QTableWidget(0, 4);
     m_params->setHorizontalHeaderLabels({QStringLiteral("Index"), QStringLiteral("Name"), QStringLiteral("Value"), QStringLiteral("Age (s)")});
     m_params->verticalHeader()->hide();
     m_params->horizontalHeader()->setStretchLastSection(true);
     m_params->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_params->verticalHeader()->setDefaultSectionSize(m_params->fontMetrics().height() + 6);
     auto *pl = new QVBoxLayout;
     pl->addWidget(new QLabel(QStringLiteral("DEBUG messages from the payload core (compid %1): ind = SDK parameter index.")
                                  .arg(TelemetryStore::kPayloadCore)));
     pl->addWidget(m_params);
-    setPage(controls, group(QStringLiteral("Payload parameter stream"), pl));
+    setPage(controls, group(QStringLiteral("PAYLOAD PARAMETER STREAM"), pl), true);
     // The status side stays readable while disconnected; only the request button needs a link.
 }
 
@@ -527,7 +632,7 @@ void TelemetryPage::refresh()
             QTableWidgetItem *item = m_params->item(row, col);
             if (!item) m_params->setItem(row, col, item = new QTableWidgetItem);
             item->setText(cells[col]);
-            item->setForeground(age * 1000 > to ? QColor(0x88, 0x88, 0x88) : palette().text().color());
+            item->setForeground(age * 1000 > to ? QColor(Theme::Dim) : palette().text().color());
         }
     }
 }
@@ -598,9 +703,9 @@ void CommandsPage::refresh()
                                   t.sentMs >= 0 ? QString::number(t.txFrame) : QString(),
                                   t.ackMs >= 0 ? QString::number(t.ackFrame) : QString()};
         QColor color = palette().text().color();
-        if (t.state == TrackedCommand::Accepted) color = QColor(0x2e, 0x7d, 0x32);
-        else if (t.state == TrackedCommand::Rejected || t.state == TrackedCommand::SendFailed || t.state == TrackedCommand::NotSent) color = QColor(0xc0, 0x1c, 0x28);
-        else if (t.state == TrackedCommand::AckTimeout) color = QColor(0xb2, 0x6a, 0x00);
+        if (t.state == TrackedCommand::Accepted) color = QColor(Theme::Ok);
+        else if (t.state == TrackedCommand::Rejected || t.state == TrackedCommand::SendFailed || t.state == TrackedCommand::NotSent) color = QColor(Theme::Bad);
+        else if (t.state == TrackedCommand::AckTimeout) color = QColor(Theme::Warn);
         for (int col = 0; col < 9; ++col) {
             QTableWidgetItem *item = m_table->item(row, col);
             if (!item) m_table->setItem(row, col, item = new QTableWidgetItem);

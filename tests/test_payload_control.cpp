@@ -230,6 +230,40 @@ private slots:
         QCOMPARE(QString::fromLatin1(p.gimbalModeId), QStringLiteral("GB_MODE"));
         QCOMPARE(p.gimbalModes.at(2).value, 2u);  // FOLLOW, verified on a VIO (software 3.1.4.18)
         QCOMPARE(QString::fromLatin1(p.gimbalModes.at(2).label), QStringLiteral("FOLLOW"));
+        QCOMPARE(QString::fromLatin1(p.trackingModeId), QStringLiteral("TRACK_MODE"));
+        QCOMPARE(p.trackingObjectMode, 0u);
+    }
+
+    void operatorStatusUsesFreshValuesOnly()
+    {
+        TelemetryStore s;
+        const int to = 3000;
+        QVERIFY(!PayloadLink::operatorStatus(s, 0, to).attitude);
+        s.add(frameOf(gimbalStatus(0x10), CapturedFrame::Rx, 1000));
+        mavlink_message_t m;
+        auto debug = [&](int ind, float v, qint64 ms) {
+            mavlink_msg_debug_pack_chan(1, TelemetryStore::kPayloadCore, MAVLINK_COMM_0, &m, 0, uint8_t(ind), v);
+            s.add(frameOf(m, CapturedFrame::Rx, ms));
+        };
+        debug(0, 2.5f, 1000);                         // EO_ZOOM
+        debug(7, float(1 << 8 | 1), 1000);            // TRK_STATUS: mode ACTIVE, status TRACKED
+        for (int ind : {3, 4}) debug(ind, 900, 1000);  // TRK_POS_X / _Y (centre)
+        for (int ind : {5, 6}) debug(ind, 100, 1000);  // TRK_POS_W / _H
+        mavlink_msg_camera_capture_status_pack_chan(1, MAV_COMP_ID_CAMERA, MAVLINK_COMM_0, &m, 0, 0, 1, 0, 12500, 0, 0, 0);
+        s.add(frameOf(m, CapturedFrame::Rx, 1000));
+
+        OperatorStatus o = PayloadLink::operatorStatus(s, 2000 * 1000000LL, to);
+        QVERIFY(o.attitude && std::abs(o.attitude->pitchDeg - (-30)) < 0.01);
+        QCOMPARE(o.eoZoom.value_or(0), 2.5);
+        QVERIFY(o.recording.value_or(false));
+        QCOMPARE(o.recordingS, 12.5);
+        QCOMPARE(o.trackMode.value_or(-1), int(PayloadLink::TrackActive));
+        QCOMPARE(o.trackStatus.value_or(-1), int(PayloadLink::TrackTracked));
+        QCOMPARE(o.trackBox.value_or(QRectF()), QRectF(850, 850, 100, 100));
+
+        debug(5, 100, 5000);  // only W refreshed: the box needs all four
+        o = PayloadLink::operatorStatus(s, 5000 * 1000000LL, to);
+        QVERIFY(!o.attitude && !o.eoZoom && !o.recording && !o.trackStatus && !o.trackBox);
     }
 
     void commandsOnTheWire()
@@ -295,6 +329,26 @@ private slots:
         mavlink_msg_gimbal_device_set_attitude_get_q(&f.msg, q);
         mavlink_quaternion_to_euler(q, &r, &p, &y);
         QVERIFY(std::abs(p * 180 / M_PI - (-30)) < 0.01 && std::abs(y * 180 / M_PI - 10) < 0.01);
+
+        // Tracking: MAV_CMD_USER_4 to the payload core, param3 0 = mode, 1 = target position
+        QVERIFY(!link.trackingTarget(2000, 10));  // outside the tracker frame
+        QVERIFY(link.trackingMode(PayloadLink::TrackActive));
+        QVERIFY(waitTx(fake, [](const MavFrame &x) {
+            return x.msgid == MAVLINK_MSG_ID_COMMAND_LONG && mavlink_msg_command_long_get_command(&x.msg) == MAV_CMD_USER_4 &&
+                   mavlink_msg_command_long_get_param3(&x.msg) == 0;
+        }, &f));
+        QCOMPARE(int(f.targetComponent), int(TelemetryStore::kPayloadCore));
+        QCOMPARE(mavlink_msg_command_long_get_param1(&f.msg), 4.f);
+        QCOMPARE(mavlink_msg_command_long_get_param4(&f.msg), 1.f);
+        QVERIFY(link.trackingTarget(480, 270));
+        QVERIFY(waitTx(fake, [](const MavFrame &x) {
+            return x.msgid == MAVLINK_MSG_ID_COMMAND_LONG && mavlink_msg_command_long_get_command(&x.msg) == MAV_CMD_USER_4 &&
+                   mavlink_msg_command_long_get_param3(&x.msg) == 1;
+        }, &f));
+        QCOMPARE(mavlink_msg_command_long_get_param4(&f.msg), 480.f);
+        QCOMPARE(mavlink_msg_command_long_get_param5(&f.msg), 270.f);
+        QCOMPARE(mavlink_msg_command_long_get_param6(&f.msg), 128.f);
+        QTRY_VERIFY_WITH_TIMEOUT(find(link, QStringLiteral("Track target"))->state != TrackedCommand::Queued, 3000);
 
         // No answer: reported as an ACK timeout, not as a failure
         QVERIFY(link.recordVideo(true));

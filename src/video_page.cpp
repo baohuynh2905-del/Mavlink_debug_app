@@ -1,11 +1,14 @@
 #include "video_page.h"
 
+#include "theme.h"
+#include "ui_util.h"
 #include "video_player.h"
 
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
 #include <QSettings>
@@ -26,22 +29,86 @@ void VideoView::clear(const QString &message)
     update();
 }
 
+void VideoView::setHud(std::vector<HudText> items, const QRectF &box, const QColor &boxColor)
+{
+    m_hud = std::move(items);
+    m_box = box;
+    m_boxColor = boxColor;
+    update();
+}
+
+void VideoView::setPickMode(bool on)
+{
+    m_pick = on;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+}
+
+QRect VideoView::pictureRect() const
+{
+    if (m_image.isNull()) return rect();
+    const QSize s = m_image.size().scaled(size(), Qt::KeepAspectRatio);
+    return QRect(QPoint((width() - s.width()) / 2, (height() - s.height()) / 2), s);
+}
+
+void VideoView::mousePressEvent(QMouseEvent *e)
+{
+    const QRect r = pictureRect();
+    if (!m_pick || m_image.isNull() || e->button() != Qt::LeftButton || !r.contains(e->position().toPoint())) {
+        QWidget::mousePressEvent(e);
+        return;
+    }
+    emit picked(QPointF((e->position().x() - r.x()) / r.width(), (e->position().y() - r.y()) / r.height()));
+}
+
 void VideoView::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
-    p.fillRect(rect(), Qt::black);
+    p.fillRect(rect(), QColor(0x05, 0x08, 0x0e));
+    const QRect r = pictureRect();
     if (m_image.isNull()) {
-        p.setPen(QColor(0xbb, 0xbb, 0xbb));
+        p.setPen(QColor(Theme::Dim));
         p.drawText(rect(), Qt::AlignCenter | Qt::TextWordWrap, m_message);
-        return;
+    } else {
+        p.setRenderHint(QPainter::SmoothPixmapTransform);
+        p.drawImage(r, m_image);
+        // Centre reticle
+        QColor accent(Theme::Accent);
+        accent.setAlpha(200);
+        p.setPen(QPen(accent, 1.5));
+        const QPoint c = r.center();
+        for (const QPoint d : {QPoint(1, 0), QPoint(-1, 0), QPoint(0, 1), QPoint(0, -1)})
+            p.drawLine(c + d * 6, c + d * 18);
     }
-    const QSize s = m_image.size().scaled(size(), Qt::KeepAspectRatio);
-    const QRect r(QPoint((width() - s.width()) / 2, (height() - s.height()) / 2), s);
-    p.setRenderHint(QPainter::SmoothPixmapTransform);
-    p.drawImage(r, m_image);
+    if (!m_box.isEmpty()) {
+        p.setPen(QPen(m_boxColor, 2));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(QRectF(r.x() + m_box.x() * r.width(), r.y() + m_box.y() * r.height(),
+                          m_box.width() * r.width(), m_box.height() * r.height()));
+    }
+
+    // Overlay lines, stacked from each corner of the picture on a dark backing for legibility
+    p.setFont(monoFont(9));
+    const QFontMetrics fm(p.font());
+    const int pad = 6, lineH = fm.height() + 6;
+    for (const Qt::Alignment corner : {Qt::AlignTop | Qt::AlignLeft, Qt::AlignTop | Qt::AlignRight,
+                                       Qt::AlignBottom | Qt::AlignLeft, Qt::AlignBottom | Qt::AlignRight}) {
+        int line = 0;
+        for (const HudText &t : m_hud) {
+            if (t.corner != corner) continue;
+            const int w = fm.horizontalAdvance(t.text) + 12;
+            const int x = corner & Qt::AlignLeft ? r.left() + pad : r.right() - pad - w;
+            const int y = corner & Qt::AlignTop ? r.top() + pad + line * (lineH + 2) : r.bottom() - pad - (line + 1) * (lineH + 2);
+            const QRect box(x, y, w, lineH);
+            p.fillRect(box, QColor(5, 9, 16, 175));
+            p.setPen(t.color);
+            p.drawText(box, Qt::AlignCenter, t.text);
+            ++line;
+        }
+    }
 }
 
-VideoPage::VideoPage(QWidget *parent) : QWidget(parent), m_player(new VideoPlayer(this)), m_view(new VideoView)
+VideoPage::VideoPage(QWidget *parent)
+    : QWidget(parent), m_player(new VideoPlayer(this)), m_view(new VideoView), m_settings(new QWidget(this))
 {
     m_url = new QLineEdit;
     m_url->setObjectName(QStringLiteral("rtspUrl"));
@@ -55,11 +122,11 @@ VideoPage::VideoPage(QWidget *parent) : QWidget(parent), m_player(new VideoPlaye
     m_latency->setRange(0, 2000);
     m_latency->setSuffix(QStringLiteral(" ms"));
     m_latency->setToolTip(QStringLiteral("rtspsrc jitter buffer"));
-    m_startStop = new QPushButton(QStringLiteral("Start video"));
+    m_startStop = button(QStringLiteral("Start video"), {}, "primary");
     m_startStop->setObjectName(QStringLiteral("videoStartStop"));
     m_status = new QLabel;
     m_status->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_status->setWordWrap(true);
+    m_status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);  // long errors must not widen the panel
 
     QSettings s;
     m_transport->setCurrentIndex(qBound(0, s.value(QStringLiteral("video/transport"), 0).toInt(), 2));
@@ -70,19 +137,44 @@ VideoPage::VideoPage(QWidget *parent) : QWidget(parent), m_player(new VideoPlaye
         m_urlEdited = s.value(QStringLiteral("video/urlEdited"), false).toBool();
     }
 
-    auto *bar = new QHBoxLayout;
+    auto *bar = new QHBoxLayout(m_settings);
+    bar->setContentsMargins(0, 0, 0, 0);
     bar->addWidget(new QLabel(QStringLiteral("RTSP URL")));
     bar->addWidget(m_url, 1);
     bar->addWidget(m_transport);
     bar->addWidget(new QLabel(QStringLiteral("Latency")));
     bar->addWidget(m_latency);
-    bar->addWidget(m_startStop);
+
+    auto *title = new QLabel(QStringLiteral("LIVE VIDEO"));
+    title->setObjectName(QStringLiteral("panelTitle"));
+    title->setStyleSheet(QStringLiteral("border: none"));  // the whole title row carries the rule
+    auto *head = new QHBoxLayout;
+    head->setContentsMargins(0, 0, 8, 0);
+    head->addWidget(title);
+    head->addWidget(m_status, 1);
+    head->addWidget(m_startStop);
     auto *l = new QVBoxLayout(this);
-    l->addLayout(bar);
-    l->addWidget(m_status);
+    l->setContentsMargins(0, 0, 0, 0);
+    l->setSpacing(4);
+    l->addLayout(head);
+    l->addWidget(m_settings);
     l->addWidget(m_view, 1);
 
-    connect(m_url, &QLineEdit::textEdited, this, [this] { m_urlEdited = true; });
+    // Saved on every change: the settings panel may be moved into another widget and destroyed before this page
+    auto save = [this] {
+        QSettings s;
+        s.setValue(QStringLiteral("video/url"), m_url->text().trimmed());
+        s.setValue(QStringLiteral("video/urlEdited"), m_urlEdited);
+        s.setValue(QStringLiteral("video/transport"), m_transport->currentIndex());
+        s.setValue(QStringLiteral("video/latencyMs"), m_latency->value());
+    };
+    connect(m_url, &QLineEdit::textChanged, this, save);
+    connect(m_url, &QLineEdit::textEdited, this, [this, save] {  // emitted after textChanged
+        m_urlEdited = true;
+        save();
+    });
+    connect(m_transport, &QComboBox::currentIndexChanged, this, save);
+    connect(m_latency, &QSpinBox::valueChanged, this, save);
     connect(m_url, &QLineEdit::returnPressed, this, &VideoPage::onStartStop);
     connect(m_startStop, &QPushButton::clicked, this, &VideoPage::onStartStop);
     connect(m_player, &VideoPlayer::stateChanged, this, &VideoPage::onState);
@@ -93,14 +185,7 @@ VideoPage::VideoPage(QWidget *parent) : QWidget(parent), m_player(new VideoPlaye
     onState();
 }
 
-VideoPage::~VideoPage()
-{
-    QSettings s;
-    s.setValue(QStringLiteral("video/url"), m_url->text().trimmed());
-    s.setValue(QStringLiteral("video/urlEdited"), m_urlEdited);
-    s.setValue(QStringLiteral("video/transport"), m_transport->currentIndex());
-    s.setValue(QStringLiteral("video/latencyMs"), m_latency->value());
-}
+VideoPage::~VideoPage() = default;
 
 void VideoPage::setPayloadIp(const QString &ip)
 {
@@ -135,19 +220,21 @@ void VideoPage::refreshStatus()
 {
     switch (m_player->state()) {
     case VideoPlayer::State::Stopped:
-        m_status->setText(QStringLiteral("Stopped. Video is independent of the MAVLink connection."));
+        m_status->setText(colored(QStringLiteral("Stopped (independent of the MAVLink link)"), Theme::Dim));
         break;
     case VideoPlayer::State::Connecting:
-        m_status->setText(QStringLiteral("Connecting (RTSP setup, waiting for the first decoded frame)…"));
+        m_status->setText(colored(QStringLiteral("Connecting: RTSP setup, waiting for the first decoded frame…"), Theme::Warn));
         break;
     case VideoPlayer::State::Playing: {
         const QImage img = m_player->latestFrame();
-        m_status->setText(QStringLiteral("Playing %1×%2, %3 fps decoded, %4 frames")
-                              .arg(img.width()).arg(img.height()).arg(m_player->fps(), 0, 'f', 1).arg(m_player->frames()));
+        m_status->setText(colored(QStringLiteral("%1×%2 · %3 fps decoded · %4 frames")
+                                      .arg(img.width()).arg(img.height()).arg(m_player->fps(), 0, 'f', 1).arg(m_player->frames()),
+                                  Theme::Dim));
         break;
     }
     case VideoPlayer::State::Error:
-        m_status->setText(QStringLiteral("<span style='color:#c01c28'>%1</span>").arg(m_player->error().toHtmlEscaped()));
+        m_status->setText(colored(m_player->error().toHtmlEscaped(), Theme::Bad));
         break;
     }
+    m_status->setToolTip(m_status->text());
 }

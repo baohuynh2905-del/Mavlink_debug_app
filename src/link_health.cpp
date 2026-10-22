@@ -33,6 +33,43 @@ QString linkStateText(LinkState s)
     return {};
 }
 
+Lamp linkLamp(LinkState s)
+{
+    switch (s) {
+    case LinkState::Heartbeat: return Lamp::Ok;
+    case LinkState::Connecting:
+    case LinkState::Disconnecting:
+    case LinkState::SocketOpen:
+    case LinkState::BytesOnly:
+    case LinkState::Mavlink: return Lamp::Warn;
+    case LinkState::Stale:
+    case LinkState::Failed: return Lamp::Bad;
+    case LinkState::Disconnected: return Lamp::Off;
+    }
+    return Lamp::Off;
+}
+
+int freshComponents(const QMap<quint16, qint64> &heartbeats, const QList<quint8> &compids, qint64 nowMs, qint64 timeoutMs)
+{
+    int n = 0;
+    for (quint8 comp : compids) {
+        for (auto it = heartbeats.cbegin(); it != heartbeats.cend(); ++it) {
+            if ((it.key() & 0xFF) == comp && nowMs - it.value() <= timeoutMs) {
+                ++n;
+                break;
+            }
+        }
+    }
+    return n;
+}
+
+Lamp payloadLamp(bool linkOpen, int fresh, int expected)
+{
+    if (!linkOpen) return Lamp::Off;
+    if (fresh >= expected) return Lamp::Ok;
+    return fresh > 0 ? Lamp::Warn : Lamp::Bad;
+}
+
 QString validateEndpoint(const QString &ip, int port)
 {
     in_addr a{};

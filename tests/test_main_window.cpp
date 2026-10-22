@@ -1,14 +1,17 @@
 // Offscreen GUI test. Set SCREENSHOT_DIR to also save a PNG of the window.
+#include "inspector_widget.h"
 #include "main_window.h"
+#include "payload_pages.h"
 #include "payload_link.h"
 #include "video_page.h"
+#include "theme.h"
 #include "video_player.h"
 
+#include <QApplication>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTabWidget>
-#include <QRegularExpression>
 #include <QTableView>
 #include <QtTest>
 
@@ -24,6 +27,32 @@ private slots:
     {
         QStandardPaths::setTestModeEnabled(true);  // QSettings go to a test location
         QCoreApplication::setOrganizationName(QStringLiteral("GremsyTest"));
+        applyTheme(*qApp);  // screenshots show the real look
+    }
+
+    // Saves a screenshot of each view and Analyze tab into dir, prefixed.
+    static void shootViews(MainWindow &w, const QString &dir, const QString &prefix)
+    {
+        auto save = [&](const QString &name) {
+            QTest::qWait(1100);  // 1 Hz refreshes
+            w.grab().save(dir + QLatin1Char('/') + prefix + name + QStringLiteral(".png"));
+        };
+        w.findChild<QPushButton *>(QStringLiteral("navOperate"))->click();
+        save(QStringLiteral("operate"));
+        w.findChild<InspectorWidget *>()->setCollapsed(true);
+        save(QStringLiteral("operate_monitor_collapsed"));
+        w.findChild<InspectorWidget *>()->setCollapsed(false);
+        auto *settings = w.findChild<QPushButton *>(QStringLiteral("settingsButton"));
+        settings->setChecked(true);
+        save(QStringLiteral("operate_settings"));
+        settings->setChecked(false);
+        w.findChild<QPushButton *>(QStringLiteral("navAnalyze"))->click();
+        auto *tabs = w.findChild<QTabWidget *>(QStringLiteral("analyzeTabs"));
+        for (int i = 0; i < tabs->count(); ++i) {
+            tabs->setCurrentIndex(i);
+            save(QStringLiteral("analyze_") + tabs->tabText(i).toLower());
+        }
+        w.findChild<QPushButton *>(QStringLiteral("navOperate"))->click();
     }
 
     void invalidIpIsRejectedWithoutConnecting()
@@ -64,7 +93,7 @@ private slots:
 
         QVERIFY(fake.learnAppEndpoint());
         fake.sendHeartbeat(MAV_COMP_ID_USER2, MAV_TYPE_GENERIC);
-        fake.sendHeartbeat(MAV_COMP_ID_CAMERA2, MAV_TYPE_CAMERA);
+        fake.sendHeartbeat(MAV_COMP_ID_CAMERA, MAV_TYPE_CAMERA);
         fake.sendHeartbeat(MAV_COMP_ID_GIMBAL, MAV_TYPE_GIMBAL);
         fake.send(QByteArray("\x01\x02junk", 6));
         QTRY_COMPARE_WITH_TIMEOUT(w.link()->state(), LinkState::Heartbeat, 3000);
@@ -89,28 +118,24 @@ private slots:
             mavlink_msg_debug_pack_chan(1, MAV_COMP_ID_USER2, MAVLINK_COMM_0, &m, 0, uint8_t(ind), v);
             fake.send(m);
         }
-        mavlink_msg_camera_capture_status_pack_chan(1, MAV_COMP_ID_CAMERA2, MAVLINK_COMM_0, &m, 0, 0, 1, 0, 42000, 51200, 17, 0);
+        mavlink_msg_camera_capture_status_pack_chan(1, MAV_COMP_ID_CAMERA, MAVLINK_COMM_0, &m, 0, 0, 1, 0, 42000, 51200, 17, 0);
         fake.send(m);
-        mavlink_msg_storage_information_pack_chan(1, MAV_COMP_ID_CAMERA2, MAVLINK_COMM_0, &m, 0, 1, 1, STORAGE_STATUS_READY,
+        mavlink_msg_storage_information_pack_chan(1, MAV_COMP_ID_CAMERA, MAVLINK_COMM_0, &m, 0, 1, 1, STORAGE_STATUS_READY,
             61440, 10240, 51200, 0, 0, STORAGE_TYPE_SD, nullptr, 0);
         fake.send(m);
         QTRY_VERIFY_WITH_TIMEOUT(w.link()->telemetry().latest(MAVLINK_MSG_ID_STORAGE_INFORMATION), 3000);
         QVERIFY(w.link()->gimbalAngle(-30, 0, 10));
 
+        // Picking a point on the video sends nothing until the tracker is armed: a bare target would move the gimbal
+        auto *camera = w.findChild<CameraPage *>();
+        QVERIFY(camera && !camera->trackArmed());
+        const size_t before = w.link()->tracker().commands().size();
+        camera->trackAt(QPointF(0.5, 0.5));
+        QCOMPARE(w.link()->tracker().commands().size(), before);
+
         if (const QByteArray dir = qgetenv("SCREENSHOT_DIR"); !dir.isEmpty()) {
-            auto *tabs = w.findChild<QTabWidget *>();
-            auto shoot = [&](const QString &tab, const QString &file) {
-                for (int i = 0; i < tabs->count(); ++i)
-                    if (tabs->tabText(i).startsWith(tab)) tabs->setCurrentIndex(i);
-                QTest::qWait(1100);  // 1 Hz refreshes
-                w.grab().save(QString::fromLocal8Bit(dir) + QLatin1Char('/') + file);
-            };
-            shoot(QStringLiteral("MAVLink"), QStringLiteral("main_window.png"));
-            shoot(QStringLiteral("Statistics"), QStringLiteral("statistics.png"));
-            shoot(QStringLiteral("Gimbal"), QStringLiteral("gimbal.png"));
-            shoot(QStringLiteral("Camera"), QStringLiteral("camera.png"));
-            shoot(QStringLiteral("Telemetry"), QStringLiteral("telemetry.png"));
-            shoot(QStringLiteral("Commands"), QStringLiteral("commands.png"));
+            w.resize(1440, 900);
+            shootViews(w, QString::fromLocal8Bit(dir), {});
         }
 
         connectBtn->click();
@@ -133,14 +158,7 @@ private slots:
         w.findChild<QPushButton *>(QStringLiteral("videoStartStop"))->click();
         QTRY_COMPARE_WITH_TIMEOUT(video->player()->state(), VideoPlayer::State::Playing, 15000);
         QTest::qWait(4000);  // info replies and parameter streams
-        auto *tabs = w.findChild<QTabWidget *>();
-        for (int i = 0; i < tabs->count(); ++i) {
-            tabs->setCurrentIndex(i);
-            QTest::qWait(1100);
-            QString name = tabs->tabText(i).toLower();
-            name.replace(QRegularExpression(QStringLiteral("[^a-z]+")), QStringLiteral("_"));
-            w.grab().save(QString::fromLocal8Bit(dir) + QStringLiteral("/hw_") + name + QStringLiteral(".png"));
-        }
+        shootViews(w, QString::fromLocal8Bit(dir), QStringLiteral("hw_"));
         w.findChild<QPushButton *>(QStringLiteral("connectButton"))->click();
         QTRY_COMPARE_WITH_TIMEOUT(w.link()->state(), LinkState::Disconnected, 3000);
     }

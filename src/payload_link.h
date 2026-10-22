@@ -10,16 +10,30 @@
 #include <QByteArray>
 #include <QMap>
 #include <QObject>
+#include <QRectF>
 #include <QTimer>
 
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 class MavlinkDict;
 class PayloadSdkInterface;
 class QThread;
 struct sockaddr_in;
+
+// The operator screen's live values. Each is set only when it was received within the timeout.
+struct OperatorStatus {
+    std::optional<GimbalAttitude> attitude;     // GIMBAL_DEVICE_ATTITUDE_STATUS
+    std::optional<double> eoZoom;               // EO_ZOOM parameter (x)
+    std::optional<bool> recording;              // CAMERA_CAPTURE_STATUS.video_status
+    double recordingS = 0;
+    std::optional<int> trackMode, trackStatus;  // TRK_STATUS = (mode << 8) | status (SDK tracking example)
+    std::optional<QRectF> trackBox;             // TRK_POS_X/Y (centre) and _W/_H, in tracker pixels
+};
+
+QString trackingStateText(int mode, int status);  // e.g. "ACTIVE / TRACKED"
 
 class PayloadLink : public QObject
 {
@@ -62,10 +76,22 @@ public:
     bool captureImage();
     bool recordVideo(bool start);
     bool requestPayloadInfo(bool automatic = false);  // info messages + the SDK DEBUG parameter streams
+
+    // Object tracking: MAV_CMD_USER_4 with param1 = 4, as the SDK's payload_do_object_tracking example sends it.
+    enum TrackMode { TrackStop = 0, TrackActive = 1 };
+    enum TrackStatus { TrackIdle = 0, TrackTracked = 1, TrackLost = 2 };
+    // shortcut: tracker pixel space taken from the SDK defaults (centre 960,540) and example (x <= 1920, y <= 1080),
+    // not from a spec; check on hardware and move to the payload profile if a model differs.
+    static constexpr double kTrackerWidth = 1920, kTrackerHeight = 1080;
+    bool trackingMode(int mode);
+    bool trackingTarget(double x, double y, double w = 128, double h = 128);  // centre and size, tracker pixels
+    bool trackingStreams();  // TRK_* DEBUG parameters every 100 ms, the example's rate
     QString commandError() const { return m_commandError; }
 
     const CommandTracker &tracker() const { return m_tracker; }
     const TelemetryStore &telemetry() const { return m_telemetry; }
+    OperatorStatus operatorStatus() const { return operatorStatus(m_telemetry, monoNs(), m_timeoutMs); }
+    static OperatorStatus operatorStatus(const TelemetryStore &t, qint64 nowNs, int timeoutMs);
 
     // Names of the SDK's DEBUG parameter stream indexes (payloadParams in payloadSdkInterface.h).
     static QString payloadParamName(int index);

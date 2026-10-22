@@ -20,6 +20,8 @@ struct PayloadProfile {
     std::vector<ParamOption> irPalettes;
     const char *gimbalModeId;  // PARAM_EXT_SET gimbal mode (older route than the attitude flags)
     std::vector<ParamOption> gimbalModes;
+    const char *trackingModeId;  // PARAM_EXT_SET that selects object tracking before arming the tracker
+    unsigned trackingObjectMode;
 };
 
 const PayloadProfile &vioProfile();

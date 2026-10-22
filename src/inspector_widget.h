@@ -9,6 +9,7 @@ class FrameModel;
 class FrameWriter;
 class PcapCapture;
 class MavlinkDict;
+class QButtonGroup;
 class QCheckBox;
 class QComboBox;
 class QLabel;
@@ -29,8 +30,13 @@ public:
     void addFrames(const std::vector<CapturedFrame> &frames);  // always recorded, displayed unless paused
     PcapCapture *capture() const { return m_capture; }
 
+    // Collapsed: only the header strip (title, direction, filters, pause) stays visible.
+    void setCollapsed(bool collapsed);
+    bool isCollapsed() const;
+
 signals:
     void networkFrames(const std::vector<CapturedFrame> &frames);  // from network capture, for the statistics
+    void collapsedChanged(bool collapsed);
 
 public:
     FrameModel *model() const { return m_model; }
@@ -60,9 +66,11 @@ private:
     QPushButton *m_captureBtn;
     QLabel *m_captureStatus;
 
-    QComboBox *m_dir, *m_status;
+    QButtonGroup *m_dir;  // ids: 0 all, then CapturedFrame::Dir + 1
+    QComboBox *m_status;
     QLineEdit *m_sys, *m_comp, *m_message, *m_text;
-    QPushButton *m_pauseBtn, *m_recordBtn;
+    QPushButton *m_pauseBtn, *m_recordBtn, *m_detailsBtn, *m_toolsBtn, *m_collapseBtn;
+    QWidget *m_body, *m_tools, *m_details;
     QCheckBox *m_autoScroll;
     QTableView *m_table;
     QTreeWidget *m_fields;

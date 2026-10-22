@@ -2,7 +2,11 @@
 // Payload control and status pages. Commands go through PayloadLink (SDK API, tracked);
 // everything displayed as measured comes from validated RX frames (PayloadLink::telemetry()).
 
+#include <QPointF>
 #include <QWidget>
+
+#include <utility>
+#include <vector>
 
 class MavlinkDict;
 class PayloadLink;
@@ -26,7 +30,7 @@ protected:
     virtual void refresh() = 0;    // 4 Hz
     virtual void linkChanged() {}  // after controls are enabled/disabled
     QWidget *controls() const { return m_controls; }
-    void setPage(QWidget *controls, QWidget *status);
+    void setPage(QWidget *controls, QWidget *status, bool statusFills = false);  // stacked vertically
     qint64 now() const;
 
     PayloadLink *m_link;
@@ -48,12 +52,14 @@ protected:
     void linkChanged() override;
 
 private:
-    QPushButton *holdButton(const QString &text, double pitchSign, double yawSign);
+    QPushButton *holdButton(const QString &text, const QString &tip, double pitchSign, double yawSign);
     void stopRate(bool force = false);  // force: send zero even if not moving (Stop button)
 
     const PayloadProfile &m_profile;
     QDoubleSpinBox *m_pitch, *m_roll, *m_yaw, *m_speed;
+    QLabel *m_readout[3];  // pitch, roll, yaw
     QLabel *m_commanded, *m_attitude, *m_rates, *m_mode, *m_flags, *m_failures, *m_delta;
+    std::vector<std::pair<unsigned, QPushButton *>> m_modeButtons;  // GB_MODE value, highlighted when reported
     QTimer *m_rateTimer;
     double m_ratePitch = 0, m_rateYaw = 0;
     QPushButton *m_held = nullptr;
@@ -67,15 +73,26 @@ class CameraPage : public PayloadPage
 public:
     CameraPage(PayloadLink *link, const MavlinkDict *dict, const PayloadProfile &profile, QWidget *parent = nullptr);
 
+    bool trackArmed() const { return m_trackArmed; }
+    void trackAt(QPointF pos);  // 0..1 picture coordinates; only while armed
+
+signals:
+    void trackArmedChanged(bool armed);
+
 protected:
     void refresh() override;
+    void linkChanged() override;
 
 private:
     QPushButton *holdButton(const QString &text, const QString &tip, bool zoom, int direction);
+    void setTrackArmed(bool armed);
 
     const PayloadProfile &m_profile;
     QSlider *m_zoomRange;
+    QPushButton *m_recBtn, *m_armBtn = nullptr, *m_centreBtn = nullptr;
+    QLabel *m_zoomReadout, *m_track = nullptr;
     QLabel *m_capture, *m_video, *m_storage, *m_settings, *m_reported;
+    bool m_trackArmed = false;
 };
 
 class TelemetryPage : public PayloadPage

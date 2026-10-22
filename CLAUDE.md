@@ -11,7 +11,13 @@ results, acceptance checklist, limitations). For setup on native Ubuntu, see
   VIO gimbal and camera control, telemetry, command/ACK tracking, video, clean-build validation, and
   install.
 - Development so far was on Windows + WSL2 (Ubuntu 24.04). Work is moving to the user's native
-  dual-boot Ubuntu 24.04 to finish the hardware testing.
+  dual-boot Ubuntu 24.04 to finish the hardware testing. The native build passes 9/9.
+- UI redesign (2026-10-22) is done:
+  - Dark station theme (`src/theme.*`).
+  - One Operate workspace (gimbal | video with HUD | camera), plus an Analyze view.
+  - A collapsible MAVLink monitor and a SETTINGS drawer.
+  - Object tracking control added. It is **untested on hardware**, and the 1920×1080 tracker pixel
+    space is an assumption.
 
 ## Next steps
 
@@ -28,8 +34,9 @@ results, acceptance checklist, limitations). For setup on native Ubuntu, see
 - **Ask first** before any command that moves the gimbal or changes the payload's state.
   - Approved so far: camera zoom/focus/settings, small gimbal angle/rate moves, and LOCK/FOLLOW mode
     changes, each undone afterwards.
-  - **Not approved:** photo capture or recording (SD writes), gimbal OFF / RESET / MAPPING, and
-    changing `RC_MODE` (a persistent setting). Re-ask for these.
+  - **Not approved:** photo capture or recording (SD writes), gimbal OFF / RESET / MAPPING,
+    changing `RC_MODE` (a persistent setting), and object tracking (Arm changes `TRACK_MODE`; tracking
+    moves the gimbal). Re-ask for these.
 - Commit and push to GitHub when a stage or fix is finished.
   - Author: `Huynh Gia Bao <baohuynh2905@gmail.com>`. Set it per clone with `git config user.name` /
     `git config user.email`; it is not stored in the repo.

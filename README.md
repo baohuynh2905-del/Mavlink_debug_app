@@ -51,7 +51,8 @@ scripts/build.sh --run        # checks dependencies, builds, runs the tests, sta
 | `src/video_player.*`, `src/video_page.*` | RTSP video (GStreamer `appsink`) and the Video tab |
 | `src/profiles.*` | Saved connection profiles |
 | `src/pcap_capture.*` | Network capture (libpcap): live interface or `.pcap` file, shown as NET |
-| `src/main_window.*`, `src/inspector_widget.*`, `src/stats_widget.*`, `src/payload_pages.*` | GUI |
+| `src/main_window.*`, `src/inspector_widget.*`, `src/stats_widget.*`, `src/payload_pages.*` | GUI: header and status lamps, Operate and Analyze views, MAVLink monitor |
+| `src/theme.*` | Dark station theme: one palette and stylesheet for the whole app, and the status colours |
 | `tests/` | Hardware-free tests (CTest). `fake_payload.h` is a loopback UDP peer used in place of a payload. |
 | `tools/check_tlog.py` | Reads a `.tlog` file with pymavlink, an independent check of recorded files |
 | `tools/mavlink_capture.cpp` | Headless capture and report (`build/mavlink_capture`), for hardware checks |
@@ -92,8 +93,42 @@ with `MAVLINK_XML_DIR`). Build-tree binaries fall back to the SDK copy.
 ./build/mavlink_debug_app      # under WSLg the window opens on the Windows desktop
 ```
 
-Enter the payload IP and UDP port (default `192.168.55.1:14566`), then click **Connect**. Connecting
-never sends a movement or camera command.
+Enter the payload IP and UDP port (default `192.168.55.1:14566`) in the **SETTINGS** drawer, then click
+**Connect**. Connecting never sends a movement or camera command. The drawer closes by itself once the payload's
+heartbeat arrives, and reopens if connecting fails.
+
+### Main screen
+
+One window, built so the gimbal can be steered while watching the video:
+
+- **Header:** status lamps, RX/TX frame rates, warnings, **SETTINGS**, and **Connect**.
+  - Lamps: **PAYLOAD** (payload core 26, camera 100 and gimbal 154 with a recent HEARTBEAT, e.g. `3/3`),
+    **MAVLINK** (the link state below), and **VIDEO** (player state and decoded fps).
+  - Lamp colours everywhere: green = confirmed by received data, amber = partial or waiting, red = lost or failed,
+    grey = off.
+  - Warnings appear only for conditions observed on the link: gimbal failure flags, capture-queue drops, send
+    errors, bad CRCs.
+- **SETTINGS drawer:** connection profile, IP, port and timeout, the detailed link status and counters, and
+  the RTSP URL, transport and latency.
+- **OPERATE view:** three resizable columns. The video gets the remaining width.
+  - Left, gimbal: modes, the hold-to-move pad and speed, move to angle, and the measured attitude.
+  - Centre: the video, with an overlay.
+  - Right: capture and recording, zoom and focus, tracking, camera settings, and camera status.
+  - Side columns scroll vertically when the window is short.
+- **ANALYZE view:** the command log (**Commands**), device info and the DEBUG parameter stream
+  (**Telemetry**), and traffic statistics (**Statistics**).
+- **MAVLINK MONITOR** (below both views):
+  - Always visible: direction (ALL/RX/TX/NET), message and text filters, Pause, Clear.
+  - **Details** shows the decoded fields and hex dump. **Tools** holds the sys/comp/status filters, export,
+    recording, and network capture.
+  - **▾** collapses the monitor to one line and gives its height to the video. Capture continues.
+- **Video overlay:** drawn only from validated RX frames received within the timeout. Stale values disappear
+  instead of freezing.
+  - REC with elapsed time, link problems, EO zoom, gimbal mode, and pitch/roll/yaw.
+  - Tracking state, and the target box when the tracker reports one.
+  - A centre reticle.
+- **Persistence:** window size, column widths, monitor height and collapsed state, and the last view are
+  restored on start-up.
 
 - **Profiles:** **Save…** stores the current IP, port, and timeout under a name. Choosing a profile
   fills those fields.
@@ -184,12 +219,12 @@ payload ↔ autopilot.
 Every command goes through the PayloadSDK API. Displayed "measured" values come only from received
 frames that passed CRC validation, never from what was sent.
 
-| Page | Controls | Feedback |
+| Where | Controls | Feedback |
 |---|---|---|
-| Gimbal | Modes OFF (with confirmation), LOCK, FOLLOW, MAPPING, RESET via `PARAM_EXT_SET GB_MODE`; move to angle (pitch ±90°, roll/yaw ±180°, the limits `setGimbalSpeed()` enforces); hold-to-move rate buttons | Measured attitude, rates, flags, failure flags and the `GB_MODE` parameter, next to the last commanded angle and the difference |
-| Camera | Photo/video mode, capture, start/stop recording; view source, record source and IR palette (VIO values from `vio_sdk.h`); hold-to-zoom and hold-to-focus, zoom to a percentage, auto focus | `CAMERA_CAPTURE_STATUS`, `STORAGE_INFORMATION`, `CAMERA_SETTINGS`, and the values the payload reports in its DEBUG stream |
-| Telemetry | Request payload info and parameter streams | Component and camera identity, app version, rangefinder, and every DEBUG parameter with its age |
-| Commands | — | Every action: outgoing frame, target, state, ACK result, queue and ACK latency. Double-click a frame number to open it in the inspector. |
+| Operate, left column | Modes OFF (with confirmation), LOCK, FOLLOW, MAPPING, RESET via `PARAM_EXT_SET GB_MODE`; move to angle (pitch ±90°, roll/yaw ±180°, the limits `setGimbalSpeed()` enforces); hold-to-move rate buttons | Measured attitude, rates, flags, failure flags and the `GB_MODE` parameter, next to the last commanded angle and the difference |
+| Operate, right column | Photo/video mode, capture, start/stop recording; view source, record source and IR palette (VIO values from `vio_sdk.h`); hold-to-zoom and hold-to-focus, zoom to a percentage, auto focus; object tracking (below) | `CAMERA_CAPTURE_STATUS`, `STORAGE_INFORMATION`, `CAMERA_SETTINGS`, and the values the payload reports in its DEBUG stream |
+| Analyze › Telemetry | Request payload info and parameter streams | Component and camera identity, app version, rangefinder, and every DEBUG parameter with its age |
+| Analyze › Commands | — | Every action: outgoing frame, target, state, ACK result, queue and ACK latency. Double-click a frame number to open it in the inspector. |
 
 Notes:
 
@@ -205,6 +240,19 @@ Notes:
   start command on press and a stop on release. Rate repeats stop if the link closes.
 - **Focus direction:** the buttons use MAVLink semantics (−1 = near, +1 = far). The SDK's
   `Camera_Focus_Value` enum names these the other way round.
+- **Object tracking** (as in the SDK's `payload_do_object_tracking` example; **not yet tested on a VIO**):
+  - **Arm** sends three commands:
+    1. `PARAM_EXT_SET TRACK_MODE` = object tracking (from `vio_sdk.h`).
+    2. Starts the `TRK_*` DEBUG streams at 100 ms.
+    3. `MAV_CMD_USER_4` (param1 4, param3 0) with mode ACTIVE.
+  - **While armed:** clicking the video, or **Track centre**, sends the target position (param3 1, a
+    128×128 box). **Release** sends mode STOP.
+  - **Safety:** a target is never sent unless the tracker is armed. The SDK notes that a position sent to an
+    inactive tracker still moves the gimbal ("EagleEyes").
+  - **Status:** `TRK_STATUS` is decoded as `(mode << 8) | status` (IDLE / TRACKED / LOST). The target box comes
+    from `TRK_POS_X/Y/W/H`.
+  - **Assumption:** both the target and the box use a 1920×1080 tracker pixel space, taken from the SDK's
+    defaults and example rather than a specification. Check it on hardware.
 - **Settings drop-downs:** a value is sent only when you pick it; refreshing the page never sends
   anything. The values the payload reports are shown separately on the status side.
 - **Controls when disconnected:** all controls are disabled while the link is not open. Nothing is
@@ -264,9 +312,10 @@ Results from a VIO over USB-C (RNDIS, laptop at `192.168.55.100`, 2026-10-22):
   - **Modes:** `GB_MODE` = FOLLOW, then LOCK, was acknowledged in 1–2 ms. The flags changed
     `0x3C` → `0x2C` → `0x3C` within ~100 ms, and the `GB_MODE` parameter followed. The flag route
     (`YAW_LOCK` cleared in `GIMBAL_DEVICE_SET_ATTITUDE`) did not change the mode.
-  - **Not exercised:** OFF, RESET, MAPPING, photo, and recording.
+  - **Not exercised:** OFF, RESET, MAPPING, photo, recording, and object tracking.
 - **GUI:** `HW_IP=192.168.55.1 SCREENSHOT_DIR=/tmp/shots QT_QPA_PLATFORM=offscreen
-  build/test_main_window hardwareScreenshots` connects read-only and saves a screenshot of each tab.
+  build/test_main_window hardwareScreenshots` connects read-only. It saves screenshots of the Operate view
+  (monitor expanded, monitor collapsed, and settings drawer open) and of each Analyze tab.
 - **Rangefinder:** the VIO sends no `DISTANCE_SENSOR`; it streams the `LRF_RANGE` parameter (about
   2–4 on a desk; the unit is not documented).
 - **Firmware quirks:**
@@ -277,7 +326,8 @@ Results from a VIO over USB-C (RNDIS, laptop at `192.168.55.100`, 2026-10-22):
 
 ## Live video
 
-The **Video** tab plays the payload's RTSP stream:
+The centre of the Operate view plays the payload's RTSP stream (**Start video** in its title bar; the URL,
+transport and latency are in the SETTINGS drawer):
 
 - **URL:** built from the payload IP using Gremsy's format, `rtsp://<IP>:8554/payload`, until you
   edit it.
@@ -378,8 +428,8 @@ loopback fake payload and checks that `sdkQuit()` returns in under 2 s (measured
 
 ## Known limitations
 
-- **Partly tested on hardware:** gimbal OFF, RESET and MAPPING, photo capture, and recording have
-  not been run on a VIO. The gimbal rate is executed far slower than commanded under the payload's
+- **Partly tested on hardware:** gimbal OFF, RESET and MAPPING, photo capture, recording, and object
+  tracking have not been run on a VIO. The tracker's pixel space (1920×1080) is an assumption. The gimbal rate is executed far slower than commanded under the payload's
   current RC settings.
 - **VIO only:** other models need their own `payload_profile_<model>.cpp`. Zoom to an absolute level
   (`setCameraZoomTarget`, a custom `MAV_CMD_USER_4`) is not exposed because its range is not

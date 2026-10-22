@@ -2,6 +2,7 @@
 #include "link_health.h"
 #include "profiles.h"
 
+#include <QMap>
 #include <QSettings>
 #include <QTemporaryDir>
 
@@ -55,6 +56,29 @@ private slots:
         o.lastRx = o.lastValidRx = t - to - 1;
         QCOMPARE(evaluateLink(o, t, to), LinkState::Stale);
         QVERIFY(isOpen(LinkState::Stale) && !isOpen(LinkState::Failed) && !isOpen(LinkState::Connecting));
+    }
+
+    void statusLamps()
+    {
+        QCOMPARE(linkLamp(LinkState::Heartbeat), Lamp::Ok);
+        QCOMPARE(linkLamp(LinkState::Mavlink), Lamp::Warn);
+        QCOMPARE(linkLamp(LinkState::Stale), Lamp::Bad);
+        QCOMPARE(linkLamp(LinkState::Disconnected), Lamp::Off);
+
+        const qint64 t = 10000, to = 3000;
+        QMap<quint16, qint64> hb;
+        hb[1 << 8 | 26] = t - 100;
+        hb[1 << 8 | 154] = t - to - 1;  // aged out
+        hb[2 << 8 | 100] = t;           // another sysid still counts
+        hb[1 << 8 | 1] = t;             // not an expected component
+        const QList<quint8> expected{26, 100, 154};
+        QCOMPARE(freshComponents(hb, expected, t, to), 2);
+        QCOMPARE(payloadLamp(true, 2, 3), Lamp::Warn);
+        hb[1 << 8 | 154] = t;
+        QCOMPARE(freshComponents(hb, expected, t, to), 3);
+        QCOMPARE(payloadLamp(true, 3, 3), Lamp::Ok);
+        QCOMPARE(payloadLamp(true, 0, 3), Lamp::Bad);
+        QCOMPARE(payloadLamp(false, 3, 3), Lamp::Off);
     }
 
     void trafficStats()

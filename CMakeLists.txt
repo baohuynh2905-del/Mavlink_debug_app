@@ -50,7 +50,7 @@ target_compile_definitions(appcore PRIVATE
     MAVLINK_XML_DIR="${SDK_DIR}/libs/third-party/mavlink/include/mavlink/v2.0/message_definitions")
 
 # --- Widgets and the GUI application ---
-add_library(appgui STATIC src/main_window.cpp src/inspector_widget.cpp src/stats_widget.cpp src/payload_pages.cpp
+add_library(appgui STATIC src/theme.cpp src/main_window.cpp src/inspector_widget.cpp src/stats_widget.cpp src/payload_pages.cpp
     src/video_player.cpp src/video_page.cpp)
 target_link_libraries(appgui PUBLIC Qt6::Widgets appcore PRIVATE PkgConfig::GSTVIDEO)
 target_compile_options(appgui PRIVATE -Wall -Wextra)
