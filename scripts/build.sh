@@ -3,6 +3,7 @@
 #   scripts/build.sh            build + run the hardware-free tests
 #   scripts/build.sh --run      ... then start the GUI
 #   scripts/build.sh --no-tests
+#   JOBS=2 scripts/build.sh     limit parallel compiles (low memory, e.g. WSL2 on a busy host)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 RUN=0; TESTS=1
@@ -31,6 +32,17 @@ done
 
 [ -f third_party/PayloadSdk/libs/CMakeLists.txt ] || git submodule update --init
 cmake -S . -B build
-cmake --build build -j"$(nproc)"
+# One compile job per ~1 GB of available memory: each translation unit pulls in the large MAVLink
+# headers (~0.4-0.8 GB), and -j$(nproc) on a many-core, small-RAM machine (e.g. WSL2) runs out of memory.
+# Override with JOBS=n: under WSL2 the VM's MemAvailable does not show the Windows host's memory
+# pressure, and Hyper-V stops the whole VM when the host cannot back it.
+if [ -z "${JOBS:-}" ]; then
+    JOBS=$(nproc)
+    MEMJOBS=$(awk '/MemAvailable/ {print int($2 / 1000000)}' /proc/meminfo)
+    ((MEMJOBS < 1)) && MEMJOBS=1
+    ((JOBS > MEMJOBS)) && JOBS=$MEMJOBS
+fi
+echo "Building with $JOBS parallel jobs"
+cmake --build build -j"$JOBS"
 if ((TESTS)); then ctest --test-dir build --output-on-failure; fi
 if ((RUN)); then exec ./build/mavlink_debug_app; fi
