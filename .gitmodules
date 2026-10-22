@@ -1,0 +1,4 @@
+[submodule "third_party/PayloadSdk"]
+	path = third_party/PayloadSdk
+	url = https://github.com/Gremsy/PayloadSdk.git
+	branch = payloadsdk_v3

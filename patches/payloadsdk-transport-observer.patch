@@ -1,0 +1,169 @@
+diff --git a/libs/payloadSdkInterface.cpp b/libs/payloadSdkInterface.cpp
+index a57a7ea..fad9886 100644
+--- a/libs/payloadSdkInterface.cpp
++++ b/libs/payloadSdkInterface.cpp
+@@ -30,6 +30,10 @@ PayloadSdkInterface::PayloadSdkInterface(T_ConnInfo data){
+ }
+ 
+ PayloadSdkInterface::~PayloadSdkInterface(){
++    // App patch: threads are joined in sdkQuit() (no-op if already called), so freeing is safe
++    sdkQuit();
++    delete payload_interface;
++    delete port;
+ }
+ 
+ void 
+@@ -74,6 +78,12 @@ regPayloadDetectionChanged(payload_detection_callback_t func){
+     __notifyPayloadDetectionChanged = func;
+ }
+ 
++void
++PayloadSdkInterface::
++regTransportObserver(transport_observer_t func){
++    __notifyTransport = func;
++}
++
+ bool 
+ PayloadSdkInterface::
+ sdkInitConnection(){
+@@ -86,6 +96,8 @@ sdkInitConnection(){
+         SDK_LOG("Please define your control method first. See payloadsdk.h");
+         return false;
+     }
++    port->observer = __notifyTransport; // App patch
++
+     /* Instantiate an gimbal interface object */
+     payload_interface = new Autopilot_Interface(port, SYS_ID, COMP_ID, 2, MAVLINK_COMM_1);
+ 
+@@ -112,11 +124,17 @@ sdkInitConnection(){
+ void
+ PayloadSdkInterface::
+ sdkQuit(){
++    // App patch: idempotent; stop the recv loop first, wake the blocked reader via
++    // port stop(), then join every thread that uses this object.
++    if(time_to_exit) return;
++    time_to_exit = true;
+     if(port_quit != nullptr){
+         port_quit->stop();
+     }
+-    payload_interface->handle_quit(0);
+-    time_to_exit = true;
++    if(recv_thread_started){
++        payload_interface->handle_quit(0);
++        pthread_join(thrd_recv, NULL);
++    }
+ }
+ 
+ bool 
+@@ -127,6 +145,7 @@ all_threads_init(){
+         std::cout << "\nError: Can not create thread!" << rc << std::endl;
+         return false;
+     }
++    recv_thread_started = true; // App patch
+     std::cout << "Thread created\n" << std::endl;
+ 
+     return true;
+diff --git a/libs/payloadSdkInterface.h b/libs/payloadSdkInterface.h
+index 1a243d9..3b6c265 100644
+--- a/libs/payloadSdkInterface.h
++++ b/libs/payloadSdkInterface.h
+@@ -172,6 +172,10 @@ public:
+     void regPayloadDetectionChanged(payload_detection_callback_t func);
+     payload_detection_callback_t __notifyPayloadDetectionChanged = NULL;
+ 
++    // App patch: observe every raw RX datagram and TX frame. Register before sdkInitConnection().
++    void regTransportObserver(transport_observer_t func);
++    transport_observer_t __notifyTransport = NULL;
++
+ 
+     /**
+      * Init connection to payload
+@@ -372,8 +376,9 @@ private:
+     pthread_t thrd_request_params;
+ 
+     uint8_t payload_ctrl_type = CONTROL_METHOD;
+-    Generic_Port *port;
++    Generic_Port *port = nullptr;
+     Generic_Port *port_quit = nullptr;
++    bool recv_thread_started = false; // App patch
+ 
+     bool time_to_exit = false;
+ 
+diff --git a/libs/third-party/mavlink/include/generic_port.h b/libs/third-party/mavlink/include/generic_port.h
+index 03e02b3..8532a02 100644
+--- a/libs/third-party/mavlink/include/generic_port.h
++++ b/libs/third-party/mavlink/include/generic_port.h
+@@ -58,6 +58,14 @@
+ 
+ #include <common/mavlink.h>
+ #include <queue>
++#include <functional>
++
++struct sockaddr_in;
++
++// App patch: raw transport observer. dir 0 = RX datagram, 1 = TX frame;
++// peer = remote endpoint; sys_errno = 0 on success, errno of a failed send otherwise.
++typedef std::function<void(int dir, const uint8_t *data, int len,
++                           const struct sockaddr_in *peer, int sys_errno)> transport_observer_t;
+ 
+ 
+ // ------------------------------------------------------------------------------
+@@ -81,6 +89,7 @@ class Generic_Port
+ public:
+ 	Generic_Port(){};
+ 	virtual ~Generic_Port(){};
++	transport_observer_t observer; // App patch: set before start(), called from the I/O threads
+ 	virtual int read_message(std::queue<mavlink_message_t> &message)=0;
+ 	virtual int write_message(const mavlink_message_t &message)=0;
+ 	virtual bool is_running()=0;
+diff --git a/libs/third-party/mavlink/src/udp_port.cpp b/libs/third-party/mavlink/src/udp_port.cpp
+index 8ca049d..582a054 100644
+--- a/libs/third-party/mavlink/src/udp_port.cpp
++++ b/libs/third-party/mavlink/src/udp_port.cpp
+@@ -87,6 +87,8 @@ UDP_Port()
+ UDP_Port::
+ ~UDP_Port()
+ {
++	// App patch: stop() only shuts down; the fd is released here, after the I/O threads are joined
++	if (sock >= 0) close(sock);
+ 	// destroy mutex
+ 	pthread_mutex_destroy(&lock);
+ }
+@@ -257,13 +259,10 @@ stop()
+ {
+ 	printf("CLOSE PORT\n");
+ 
+-	int result = close(sock);
+-	sock = -1;
+-
+-	if ( result )
+-	{
+-		fprintf(stderr,"WARNING: Error on port close (%i)\n", result );
+-	}
++	// App patch: close() does not wake a thread blocked in recvfrom(), so with a silent
++	// payload the read thread could never be joined. shutdown(SHUT_RD) wakes it; SHUT_WR
++	// is avoided because a later heartbeat sendto() would raise SIGPIPE.
++	shutdown(sock, SHUT_RD);
+ 
+ 	is_open = false;
+ 
+@@ -301,6 +300,7 @@ _read_port(uint8_t &cp)
+ 		struct sockaddr_in addr;
+ 		len = sizeof(struct sockaddr_in);
+ 		result = recvfrom(sock, &buff, BUFF_LEN, 0, (struct sockaddr *)&addr, &len);
++		if (result > 0 && observer) observer(0, (const uint8_t *)buff, result, &addr, 0); // App patch
+ 		
+ 		// printf("%s %d \n", __func__, result);
+ 	#if (UDP_MODE == UDP_SERVER)
+@@ -337,6 +337,11 @@ _write_port(char *buf, unsigned len)
+ 		addr.sin_addr.s_addr = inet_addr(target_ip);
+ 		addr.sin_port = htons(tx_port);
+ 		bytesWritten = sendto(sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
++		if (observer) { // App patch
++			int err = bytesWritten < 0 ? errno : 0;
++			observer(1, (const uint8_t *)buf, len, &addr, err);
++			errno = err;
++		}
+ 		// printf("sendto: %s \t %i\n",target_ip,tx_port);
+ 	}else{
+ 		printf("ERROR: Sending before first packet received!\n");
