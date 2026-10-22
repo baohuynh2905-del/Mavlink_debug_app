@@ -17,6 +17,10 @@ not supported yet. See *Acceptance checklist* and *Known limitations*.
 
 ## Quick start (Ubuntu 24.04 or WSL2)
 
+**Native Ubuntu (for example a dual-boot laptop):** follow [docs/INSTALL_UBUNTU.md](docs/INSTALL_UBUNTU.md).
+It covers GitHub access, dependencies, connecting the VIO over USB-C, video, live capture
+permissions, and the hardware checks that are still open.
+
 ```bash
 git clone --recursive https://github.com/baohuynh2905-del/Mavlink_debug_app.git
 cd Mavlink_debug_app
@@ -51,6 +55,8 @@ scripts/build.sh --run        # checks dependencies, builds, runs the tests, sta
 | `tests/` | Hardware-free tests (CTest). `fake_payload.h` is a loopback UDP peer used in place of a payload. |
 | `tools/check_tlog.py` | Reads a `.tlog` file with pymavlink, an independent check of recorded files |
 | `tools/mavlink_capture.cpp` | Headless capture and report (`build/mavlink_capture`), for hardware checks |
+| `docs/INSTALL_UBUNTU.md` | Step-by-step install and hardware-test guide for native Ubuntu |
+| `scripts/build.sh` | Dependency check, build, tests, optional run |
 | `tests/hw_vio_commands.cpp` | Hardware check of the control path on a real VIO; moves the gimbal; never run by ctest |
 
 ## Dependencies (Ubuntu 24.04, native or WSL2)
