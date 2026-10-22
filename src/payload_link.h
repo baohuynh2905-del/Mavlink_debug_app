@@ -3,7 +3,9 @@
 // (transport observer) to the GUI thread.
 
 #include "captured_frame.h"
+#include "command_tracker.h"
 #include "link_health.h"
+#include "telemetry.h"
 
 #include <QByteArray>
 #include <QMap>
@@ -46,14 +48,41 @@ public:
 
     static constexpr size_t kMaxPendingDatagrams = 20000;
 
+    // --- Payload commands -------------------------------------------------------------------
+    // Each goes through the SDK API and is registered with tracker() under the given UI label.
+    // They return false (reason in commandError()) when the link is not open or input is invalid.
+    bool gimbalMode(GimbalFlags::Change change, const QString &label);  // needs observed gimbal flags
+    bool gimbalHome();                                                // NEUTRAL set, cleared 100 ms later
+    bool gimbalAngle(double pitchDeg, double rollDeg, double yawDeg);
+    bool gimbalRate(double pitchDps, double rollDps, double yawDps, bool track = true);
+    bool cameraParam(const QString &label, const char *paramId, quint32 value);
+    bool cameraZoom(int zoomType, float value, const QString &label);   // MAV_CMD_SET_CAMERA_ZOOM
+    bool cameraFocus(int focusType, float value, const QString &label); // MAV_CMD_SET_CAMERA_FOCUS
+    bool cameraMode(int cameraMode);                                    // CAMERA_MODE_IMAGE / _VIDEO
+    bool captureImage();
+    bool recordVideo(bool start);
+    bool requestPayloadInfo(bool automatic = false);  // info messages + the SDK DEBUG parameter streams
+    QString commandError() const { return m_commandError; }
+
+    const CommandTracker &tracker() const { return m_tracker; }
+    const TelemetryStore &telemetry() const { return m_telemetry; }
+
+    // Names of the SDK's DEBUG parameter stream indexes (payloadParams in payloadSdkInterface.h).
+    static QString payloadParamName(int index);
+
+    // Gimbal angle limits enforced by PayloadSdkInterface::setGimbalSpeed() in INPUT_ANGLE mode.
+    static constexpr double kPitchLimit = 90, kRollLimit = 180, kYawLimit = 180;
+
 signals:
     void stateChanged();
     void framesCaptured(const std::vector<CapturedFrame> &frames);  // GUI thread, in observation order
+    void commandsChanged();
 
 private:
     void onTransport(int dir, const uint8_t *data, int len, const sockaddr_in *peer, int sysErrno);
     void poll();
     void setState(LinkState s, const QString &error = {});
+    bool ready();
     template <class Work, class Done> void runInWorker(Work work, Done done);
 
     struct Datagram {
@@ -86,4 +115,8 @@ private:
     int m_timeoutMs = 3000;
     quint64 m_nextFrameIndex = 0;
     QTimer m_pollTimer;
+    CommandTracker m_tracker;
+    TelemetryStore m_telemetry;
+    QString m_commandError;
+    bool m_autoInfoSent = false;
 };

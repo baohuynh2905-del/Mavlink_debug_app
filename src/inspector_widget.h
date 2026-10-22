@@ -29,6 +29,7 @@ public:
     FrameModel *model() const { return m_model; }
     FrameFilter *filter() const { return m_filter; }
     bool startRecording(const QString &path, QString *error);  // also used by tests
+    bool selectFrame(quint64 frameIndex);  // false if evicted or hidden by the current filter
     void stopRecording();
 
 private:

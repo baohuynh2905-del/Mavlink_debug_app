@@ -9,6 +9,8 @@
 #include <QTableView>
 #include <QtTest>
 
+#include <cmath>
+
 #include "fake_payload.h"
 
 class TestMainWindow : public QObject
@@ -73,12 +75,39 @@ private slots:
                 break;
             }
         }
+        // Simulated payload telemetry so the control pages have something to show
+        mavlink_message_t m;
+        float q[4];
+        mavlink_euler_to_quaternion(0, float(-30 * M_PI / 180), float(12 * M_PI / 180), q);
+        mavlink_msg_gimbal_device_attitude_status_pack_chan(1, MAV_COMP_ID_GIMBAL, MAVLINK_COMM_0, &m, 0, 0, 0,
+            GIMBAL_DEVICE_FLAGS_YAW_LOCK, q, 0, 0, 0, 0, NAN, NAN, 0);
+        fake.send(m);
+        for (auto [ind, v] : {std::pair<int, float>{0, 3}, {2, 152.3f}, {19, 1}, {20, 0}, {22, 2}}) {
+            mavlink_msg_debug_pack_chan(1, MAV_COMP_ID_USER2, MAVLINK_COMM_0, &m, 0, uint8_t(ind), v);
+            fake.send(m);
+        }
+        mavlink_msg_camera_capture_status_pack_chan(1, MAV_COMP_ID_CAMERA2, MAVLINK_COMM_0, &m, 0, 0, 1, 0, 42000, 51200, 17, 0);
+        fake.send(m);
+        mavlink_msg_storage_information_pack_chan(1, MAV_COMP_ID_CAMERA2, MAVLINK_COMM_0, &m, 0, 1, 1, STORAGE_STATUS_READY,
+            61440, 10240, 51200, 0, 0, STORAGE_TYPE_SD, nullptr, 0);
+        fake.send(m);
+        QTRY_VERIFY_WITH_TIMEOUT(w.link()->telemetry().latest(MAVLINK_MSG_ID_STORAGE_INFORMATION), 3000);
+        QVERIFY(w.link()->gimbalAngle(-30, 0, 10));
+
         if (const QByteArray dir = qgetenv("SCREENSHOT_DIR"); !dir.isEmpty()) {
-            w.grab().save(QString::fromLocal8Bit(dir) + QStringLiteral("/main_window.png"));
             auto *tabs = w.findChild<QTabWidget *>();
-            tabs->setCurrentIndex(1);
-            QTest::qWait(1100);  // statistics refresh at 1 Hz
-            w.grab().save(QString::fromLocal8Bit(dir) + QStringLiteral("/statistics.png"));
+            auto shoot = [&](const QString &tab, const QString &file) {
+                for (int i = 0; i < tabs->count(); ++i)
+                    if (tabs->tabText(i).startsWith(tab)) tabs->setCurrentIndex(i);
+                QTest::qWait(1100);  // 1 Hz refreshes
+                w.grab().save(QString::fromLocal8Bit(dir) + QLatin1Char('/') + file);
+            };
+            shoot(QStringLiteral("MAVLink"), QStringLiteral("main_window.png"));
+            shoot(QStringLiteral("Statistics"), QStringLiteral("statistics.png"));
+            shoot(QStringLiteral("Gimbal"), QStringLiteral("gimbal.png"));
+            shoot(QStringLiteral("Camera"), QStringLiteral("camera.png"));
+            shoot(QStringLiteral("Telemetry"), QStringLiteral("telemetry.png"));
+            shoot(QStringLiteral("Commands"), QStringLiteral("commands.png"));
         }
 
         connectBtn->click();

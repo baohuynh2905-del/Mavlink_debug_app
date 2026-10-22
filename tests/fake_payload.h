@@ -1,7 +1,7 @@
 #pragma once
 // Loopback stand-in for a payload: a plain UDP socket the SDK connects to. Test-only.
 
-#include <ardupilotmega/mavlink.h>
+#include "mavlink_frame.h"
 
 #include <QByteArray>
 
@@ -45,6 +45,18 @@ public:
         mavlink_message_t m;
         mavlink_msg_heartbeat_pack_chan(1, comp, MAVLINK_COMM_0, &m, type, MAV_AUTOPILOT_INVALID, 0, 0, MAV_STATE_ACTIVE);
         send(m);
+    }
+
+    // Every valid frame received since the last call, without blocking.
+    std::vector<MavFrame> received()
+    {
+        std::vector<MavFrame> out;
+        uint8_t b[2048];
+        ssize_t n;
+        while ((n = recv(fd, b, sizeof b, MSG_DONTWAIT)) > 0)
+            for (MavFrame &f : parseDatagram(b, size_t(n)))
+                if (f.status == MavFrame::Ok) out.push_back(std::move(f));
+        return out;
     }
 
     int fd;

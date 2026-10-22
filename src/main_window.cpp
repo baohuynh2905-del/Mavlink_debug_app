@@ -1,6 +1,8 @@
 #include "main_window.h"
 
 #include "inspector_widget.h"
+#include "payload_pages.h"
+#include "payload_profile.h"
 #include "payload_link.h"
 #include "stats_widget.h"
 
@@ -111,9 +113,20 @@ MainWindow::MainWindow(QWidget *parent)
     m_inspector = new InspectorWidget(m_dict.isLoaded() ? &m_dict : nullptr);
     m_statsPage = new StatsWidget(m_dict.isLoaded() ? &m_dict : nullptr);
 
+    const MavlinkDict *dict = m_dict.isLoaded() ? &m_dict : nullptr;
+    auto *commands = new CommandsPage(m_link, dict);
     auto *tabs = new QTabWidget;
     tabs->addTab(m_inspector, QStringLiteral("MAVLink Inspector"));
+    tabs->addTab(commands, QStringLiteral("Commands"));
+    tabs->addTab(new GimbalPage(m_link, dict), QStringLiteral("Gimbal"));
+    tabs->addTab(new CameraPage(m_link, dict, vioProfile()), QStringLiteral("Camera (VIO)"));
+    tabs->addTab(new TelemetryPage(m_link, dict), QStringLiteral("Telemetry"));
     tabs->addTab(m_statsPage, QStringLiteral("Statistics"));
+    connect(commands, &CommandsPage::showFrame, this, [this, tabs](quint64 index) {
+        tabs->setCurrentWidget(m_inspector);
+        if (!m_inspector->selectFrame(index))
+            statusBar()->showMessage(QStringLiteral("Frame #%1 is not in the table (evicted, or hidden by the filter)").arg(index), 5000);
+    });
 
     auto *central = new QWidget;
     auto *layout = new QVBoxLayout(central);

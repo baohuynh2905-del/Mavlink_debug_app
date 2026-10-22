@@ -3,9 +3,10 @@
 Desktop tool (C++17, Qt 6 Widgets, CMake) for controlling Gremsy payloads through the official
 PayloadSDK and inspecting the real MAVLink traffic of that connection.
 
-**Status: Stage 3.** Connection management and the MAVLink Inspector are complete: live table,
-decoded details, filters, statistics, export, and recording. The payload control pages (gimbal,
-camera, telemetry, video) are not built yet.
+**Status: Stage 4.** Connection management, the MAVLink Inspector, VIO gimbal and camera
+controls, telemetry, and command/acknowledgement tracking are done. Live video and other payload
+models are not built yet. Nothing has been tested against a physical payload so far; all tests use a
+loopback fake payload.
 
 ## Layout
 
@@ -20,7 +21,10 @@ camera, telemetry, video) are not built yet.
 | `src/mavlink_dict.*` | Units, enum names, bitmasks, and descriptions from the SDK's MAVLink XML |
 | `src/frame_text.*` | Summary, validation text, hex dump, and CSV/JSON encoding (one source for the table, the details pane, and the files) |
 | `src/frame_filter.*`, `src/flow_stats.*`, `src/frame_writer.*` | Inspector filters, per-flow statistics, and the background file writer |
-| `src/main_window.*`, `src/inspector_widget.*`, `src/stats_widget.*` | GUI |
+| `src/command_tracker.*` | Matches each UI action to its outgoing frame and to the payload's ACK |
+| `src/telemetry.*` | Latest validated RX frames, the payload's DEBUG parameter stream, and gimbal flag rules |
+| `src/payload_profile*` | Per-model parameter IDs and values, taken from the SDK's `payload-define/<model>_sdk.h` |
+| `src/main_window.*`, `src/inspector_widget.*`, `src/stats_widget.*`, `src/payload_pages.*` | GUI |
 | `tests/` | Hardware-free tests (CTest). `fake_payload.h` is a loopback UDP peer used in place of a payload. |
 | `tools/check_tlog.py` | Reads a `.tlog` file with pymavlink, an independent check of recorded files |
 
@@ -108,6 +112,50 @@ and component ID, in observation order.
 | `.csv` | One row per frame: index, datagram, UTC time, monotonic ns, direction, peer, header fields, target, status, signed flag, send errno, decoded summary, raw hex. |
 | `.jsonl` | One JSON object per frame, with the same metadata plus typed `fields` (NaN and Inf are written as the strings `"nan"`, `"inf"`, `"-inf"`). |
 
+## Payload control (VIO)
+
+Every command goes through the PayloadSDK API. Displayed "measured" values come only from received
+frames that passed CRC validation, never from what was sent.
+
+| Page | Controls | Feedback |
+|---|---|---|
+| Gimbal | Lock, Follow, Mapping, Home, Motors on/off (with confirmation); move to angle (pitch ±90°, roll/yaw ±180°, the limits `setGimbalSpeed()` enforces); hold-to-move rate buttons | Measured attitude, rates, flags, mode and failure flags from `GIMBAL_DEVICE_ATTITUDE_STATUS`, next to the last commanded angle and the difference |
+| Camera | Photo/video mode, capture, start/stop recording; view source, record source and IR palette (VIO values from `vio_sdk.h`); hold-to-zoom and hold-to-focus, zoom to a percentage, auto focus | `CAMERA_CAPTURE_STATUS`, `STORAGE_INFORMATION`, `CAMERA_SETTINGS`, and the values the payload reports in its DEBUG stream |
+| Telemetry | Request payload info and parameter streams | Component and camera identity, app version, rangefinder, and every DEBUG parameter with its age |
+| Commands | — | Every action: outgoing frame, target, state, ACK result, queue and ACK latency. Double-click a frame number to open it in the inspector. |
+
+Notes:
+
+- **Gimbal modes:** the mode is carried in the `GIMBAL_DEVICE_SET_ATTITUDE` flags, as in the SDK's
+  current `examples/gimbal_set_mode.cpp`. The bits other than the mode bits come from the flags the
+  gimbal last reported, so mode buttons are refused until a `GIMBAL_DEVICE_ATTITUDE_STATUS` has been
+  received. Bit `0x4000` is Gremsy's "mapping" bit; it is not defined in the MAVLink XML.
+- **Hold-to-move rates and continuous zoom/focus:** rates are re-sent every 100 ms while a button is
+  held, like Gremsy's `ui_demo`, and a zero rate is sent on release. Zoom and focus send a
+  start command on press and a stop on release. Rate repeats stop if the link closes.
+- **Focus direction:** the buttons use MAVLink semantics (−1 = near, +1 = far). The SDK's
+  `Camera_Focus_Value` enum names these the other way round.
+- **Settings drop-downs:** a value is sent only when you pick it; refreshing the page never sends
+  anything. The values the payload reports are shown separately on the status side.
+- **Controls when disconnected:** all controls are disabled while the link is not open. Nothing is
+  sent on application start-up.
+- **Automatic info request:** once per connection, when the payload core's heartbeat (compid 26)
+  first arrives, the app requests the info messages and starts the DEBUG parameter streams at
+  Gremsy's `ui_demo` rates. These are read requests only, listed on the Commands tab with an
+  `Auto:` prefix.
+
+### Command states
+
+| State | Meaning |
+|---|---|
+| Queued in SDK | The SDK API was called; the frame has not been seen on the wire yet. |
+| Not seen on wire | Nothing matching left within 3 s. |
+| Send failed | The frame was seen, but `sendto()` failed. |
+| Sent, awaiting ACK | Waiting for `COMMAND_ACK` (matched by MAV_CMD and answering component) or `PARAM_EXT_ACK` (matched by `param_id`). |
+| Accepted / In progress / Rejected | The ACK result (`MAV_RESULT` / `PARAM_ACK`). |
+| Sent (no ACK defined) | `GIMBAL_DEVICE_SET_ATTITUDE` has no acknowledgement; check the gimbal telemetry instead. |
+| No ACK (timeout) | Nothing within 3 s. This does **not** mean the command failed. |
+
 ## Threading
 
 - The SDK's I/O threads only copy each datagram into a bounded queue (20,000 entries). Overflow is
@@ -172,6 +220,14 @@ loopback fake payload and checks that `sdkQuit()` returns in under 2 s (measured
   slightly after the API call.
 
 ## Known limitations
+
+- **Not yet tested on hardware:** the control flows are verified against the SDK source and a
+  loopback fake payload only. Enum values, gimbal flag behaviour, and which commands the VIO
+  firmware acknowledges still need confirming on a real payload.
+- **VIO only:** other models need their own `payload_profile_<model>.cpp`. Zoom to an absolute level
+  (`setCameraZoomTarget`, a custom `MAV_CMD_USER_4`) is not exposed because its range is not
+  documented per model.
+- **No live video yet:** planned for Stage 5.
 
 - **No time-range filter:** the inspector shows the live session only. A log viewer that loads
   recorded files is not implemented.

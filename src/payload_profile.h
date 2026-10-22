@@ -1,0 +1,23 @@
+#pragma once
+// What a payload model supports, with parameter IDs and values taken from the SDK's model header.
+// The SDK's model headers reuse macro names with different values, so each profile lives in its
+// own translation unit (payload_profile_<model>.cpp) that includes only its header.
+
+#include <vector>
+
+struct ParamOption {
+    unsigned value;
+    const char *label;
+};
+
+struct PayloadProfile {
+    const char *name;
+    const char *viewSourceId;            // PARAM_EXT id, nullptr = unsupported
+    std::vector<ParamOption> viewSources;
+    const char *recordSourceId;
+    std::vector<ParamOption> recordSources;
+    const char *irPaletteId;
+    std::vector<ParamOption> irPalettes;
+};
+
+const PayloadProfile &vioProfile();

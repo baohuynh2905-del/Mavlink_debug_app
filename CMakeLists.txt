@@ -37,7 +37,8 @@ target_compile_options(mavcore PRIVATE -Wall -Wextra)
 # --- App logic without widgets: SDK ownership, link health, frame model ---
 add_library(appcore STATIC
     src/link_health.cpp src/payload_link.cpp src/frame_model.cpp src/frame_filter.cpp
-    src/frame_text.cpp src/frame_writer.cpp src/flow_stats.cpp src/mavlink_dict.cpp)
+    src/frame_text.cpp src/frame_writer.cpp src/flow_stats.cpp src/mavlink_dict.cpp
+    src/command_tracker.cpp src/telemetry.cpp src/payload_profile_vio.cpp)
 target_include_directories(appcore PUBLIC src)
 target_link_libraries(appcore PUBLIC Qt6::Gui mavcore PRIVATE PayloadSDK)
 target_compile_options(appcore PRIVATE -Wall -Wextra)
@@ -46,7 +47,7 @@ target_compile_definitions(appcore PRIVATE
     MAVLINK_XML_DIR="${SDK_DIR}/libs/third-party/mavlink/include/mavlink/v2.0/message_definitions")
 
 # --- Widgets and the GUI application ---
-add_library(appgui STATIC src/main_window.cpp src/inspector_widget.cpp src/stats_widget.cpp)
+add_library(appgui STATIC src/main_window.cpp src/inspector_widget.cpp src/stats_widget.cpp src/payload_pages.cpp)
 target_link_libraries(appgui PUBLIC Qt6::Widgets appcore)
 target_compile_options(appgui PRIVATE -Wall -Wextra)
 
@@ -64,7 +65,7 @@ target_link_libraries(test_sdk_transport PayloadSDK mavcore)
 add_test(NAME sdk_transport COMMAND test_sdk_transport)
 set_tests_properties(sdk_transport PROPERTIES TIMEOUT 30)  # a shutdown hang fails instead of blocking
 
-foreach(t link_logic payload_link inspector main_window)
+foreach(t link_logic payload_link inspector payload_control main_window)
     add_executable(test_${t} tests/test_${t}.cpp)
     target_link_libraries(test_${t} PRIVATE Qt6::Test appgui)
     add_test(NAME ${t} COMMAND test_${t})

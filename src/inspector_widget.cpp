@@ -212,6 +212,22 @@ void InspectorWidget::addFrames(const std::vector<CapturedFrame> &frames)
     if (m_autoScroll->isChecked()) m_table->scrollToBottom();
 }
 
+bool InspectorWidget::selectFrame(quint64 frameIndex)
+{
+    m_pauseBtn->setChecked(false);  // resumes via toggled(): the frame may still be held
+    for (int r = m_filter->rowCount() - 1; r >= 0; --r) {
+        const quint64 idx = m_filter->frameAt(r).index;
+        if (idx == frameIndex) {
+            m_autoScroll->setChecked(false);  // keep the selected frame in view
+            m_table->setCurrentIndex(m_filter->index(r, 0));
+            m_table->scrollTo(m_filter->index(r, 0), QAbstractItemView::PositionAtCenter);
+            return true;
+        }
+        if (idx < frameIndex) break;  // rows are in observation order
+    }
+    return false;
+}
+
 void InspectorWidget::applyFilter()
 {
     FrameCriteria c;
