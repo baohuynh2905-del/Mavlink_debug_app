@@ -34,6 +34,7 @@ private slots:
     {
         QStandardPaths::setTestModeEnabled(true);  // QSettings go to a test location
         QCoreApplication::setOrganizationName(QStringLiteral("GremsyTest"));
+        QSettings().clear();  // e.g. the model a previous run connected with
         applyTheme(*qApp);  // screenshots show the real look
     }
 
@@ -284,6 +285,57 @@ private slots:
         connectBtn->click();
         QTRY_COMPARE_WITH_TIMEOUT(w.link()->state(), LinkState::Disconnected, 3000);
         QVERIFY(ip->isEnabled());
+    }
+
+    // Choosing another model rebuilds the gimbal and camera pages from its profile; a different reported model warns
+    void modelSwitchRebuildsPages()
+    {
+        FakePayload fake;
+        MainWindow w;
+        w.show();
+        auto *model = w.findChild<QComboBox *>(QStringLiteral("modelBox"));
+        QVERIFY(model && model->count() == 4 && model->currentText() == QStringLiteral("VIO"));
+        w.findChild<QLineEdit *>(QStringLiteral("ipEdit"))->setText(QStringLiteral("127.0.0.1"));
+        w.findChild<QSpinBox *>(QStringLiteral("portSpin"))->setValue(fake.port);
+        w.findChild<QPushButton *>(QStringLiteral("connectButton"))->click();  // controls are enabled only while connected
+        QTRY_VERIFY_WITH_TIMEOUT(isOpen(w.link()->state()), 5000);
+        QVERIFY(fake.learnAppEndpoint());
+
+        for (int i = 0; i < model->count(); ++i) {  // every model builds its pages and its settings dialog
+            model->setCurrentIndex(i);
+            emit model->activated(i);
+            QCOMPARE(w.findChildren<CameraPage *>().size(), qsizetype(1));  // the previous pages are gone
+            QCOMPARE(w.findChildren<GimbalPage *>().size(), qsizetype(1));
+            auto *camera = w.findChild<CameraPage *>();
+            QPushButton *all = nullptr;
+            for (QPushButton *b : camera->findChildren<QPushButton *>())
+                if (b->text().contains(QStringLiteral("All camera settings"))) all = b;
+            QVERIFY(all && all->isEnabled());
+            all->click();
+            auto *dialog = camera->findChild<QDialog *>();
+            QVERIFY(dialog);
+            auto *tabs = dialog->findChild<QTabWidget *>();
+            QVERIFY2(tabs && tabs->count() >= 2, qPrintable(model->currentText()));
+            dialog->close();
+        }
+
+        model->setCurrentText(QStringLiteral("ZIO"));
+        emit model->activated(model->currentIndex());
+        bool noPalette = false;  // EO-only model
+        for (QComboBox *c : w.findChild<CameraPage *>()->findChildren<QComboBox *>())
+            noPalette |= c->currentText() == QStringLiteral("not supported by ZIO");
+        QVERIFY(noPalette);
+        QVERIFY(w.findChild<QLabel *>(QStringLiteral("appSubtitle"))->text().contains(QStringLiteral("ZIO")));
+        mavlink_message_t m;
+        mavlink_msg_component_information_basic_pack_chan(1, MAV_COMP_ID_USER2, MAVLINK_COMM_0, &m, 0, 0, 0, "Gremsy JSC", "Vio",
+                                                          "3.1.8.21", "V42A", "1");
+        fake.send(m);
+        QTRY_VERIFY_WITH_TIMEOUT(w.findChild<QLabel *>(QStringLiteral("warning"))->text().contains(QStringLiteral("PAYLOAD REPORTS VIO, MODEL SET TO ZIO")), 3000);
+        model->setCurrentText(QStringLiteral("VIO"));
+        emit model->activated(model->currentIndex());
+        QTRY_VERIFY_WITH_TIMEOUT(!w.findChild<QLabel *>(QStringLiteral("warning"))->text().contains(QStringLiteral("MODEL SET TO")), 3000);
+        w.findChild<QPushButton *>(QStringLiteral("connectButton"))->click();
+        QTRY_COMPARE_WITH_TIMEOUT(w.link()->state(), LinkState::Disconnected, 3000);
     }
 
     // Read-only: connects to a real payload and screenshots each tab. Runs only when HW_IP is set.

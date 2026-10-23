@@ -41,7 +41,7 @@ target_compile_options(mavcore PRIVATE -Wall -Wextra)
 add_library(appcore STATIC
     src/link_health.cpp src/payload_link.cpp src/frame_model.cpp src/frame_filter.cpp
     src/frame_text.cpp src/frame_writer.cpp src/flow_stats.cpp src/mavlink_dict.cpp
-    src/command_tracker.cpp src/telemetry.cpp src/payload_profile_vio.cpp src/profiles.cpp src/pcap_capture.cpp)
+    src/command_tracker.cpp src/telemetry.cpp src/payload_profile_vio.cpp src/payload_profile_zio.cpp src/payload_profile_mb1.cpp src/payload_profile_orusl.cpp src/profiles.cpp src/pcap_capture.cpp)
 target_include_directories(appcore PUBLIC src)
 target_link_libraries(appcore PUBLIC Qt6::Gui mavcore PkgConfig::PCAP PRIVATE PayloadSDK)
 target_compile_options(appcore PRIVATE -Wall -Wextra)

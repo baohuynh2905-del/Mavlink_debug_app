@@ -1,0 +1,186 @@
+#include "payload_profile.h"
+
+#include "mb1_sdk.h"  // SDK libs/payload-define: the only source of these IDs and values (not checked on hardware)
+
+static_assert(ZOOM_EO_12X == 11 && ZOOM_IR_8X == 7 && ISOTHERM_COLOR_RED == 6, "mb1_sdk.h enums changed");
+
+// Not offered: C_G_AE_MODE / C_G_SHUTTER / C_G_IRIS / C_G_GAIN, C_V_ZOOM_SPEED / C_V_FOCUS_SPEED and LRF_MODE (no values
+// in mb1_sdk.h), C_G_AE_COMP and the isotherm region temperatures (signed; settings are sent as uint32), and
+// SETTING_TARGET (only selects which device a UI shows).
+const PayloadProfile &mb1Profile()
+{
+    static const std::vector<ParamOption> viewSources{
+        {PAYLOAD_CAMERA_VIEW_EOIR, "EO / IR (picture-in-picture)"},
+        {PAYLOAD_CAMERA_VIEW_EO, "EO only"},
+        {PAYLOAD_CAMERA_VIEW_IR, "IR only"},
+        {PAYLOAD_CAMERA_VIEW_IREO, "IR / EO (picture-in-picture)"}};
+    static const std::vector<ParamOption> recordSources{
+        {PAYLOAD_CAMERA_RECORD_BOTH, "EO + IR"},
+        {PAYLOAD_CAMERA_RECORD_EO, "EO"},
+        {PAYLOAD_CAMERA_RECORD_IR, "IR"},
+        {PAYLOAD_CAMERA_RECORD_OSD, "With OSD"}};
+    static const std::vector<ParamOption> irPalettes{
+        {PAYLOAD_CAMERA_IR_PALETTE_1, "1  (F1 WhiteHot | G1 WhiteHot)"},
+        {PAYLOAD_CAMERA_IR_PALETTE_2, "2  (F1 BlackHot | G1 Fulgurite)"},
+        {PAYLOAD_CAMERA_IR_PALETTE_3, "3  (F1 Rainbow | G1 IronRed)"},
+        {PAYLOAD_CAMERA_IR_PALETTE_4, "4  (F1 RainbowHC | G1 HotIron)"},
+        {PAYLOAD_CAMERA_IR_PALETTE_5, "5  (F1 Ironbow | G1 Medical)"},
+        {PAYLOAD_CAMERA_IR_PALETTE_6, "6  (F1 Lava | G1 Arctic)"},
+        {PAYLOAD_CAMERA_IR_PALETTE_7, "7  (F1 Arctic | G1 Rainbow1)"},
+        {PAYLOAD_CAMERA_IR_PALETTE_8, "8  (F1 Globow | G1 Rainbow2)"},
+        {PAYLOAD_CAMERA_IR_PALETTE_9, "9  (F1 Gradedfire | G1 Tint)"},
+        {PAYLOAD_CAMERA_IR_PALETTE_10, "10 (F1 Hottest | G1 BlackHot)"}};
+    static const std::vector<ParamOption> enable{{1, "Enabled"}, {0, "Disabled"}};  // the _ENABLE / _DISABLE pairs below
+    static_assert(PAYLOAD_CAMERA_IR_SPOTMETER_MODE_ENABLE == 1 && PAYLOAD_CAMERA_IR_ISOTHERM_MODE_ENABLE == 1 &&
+                      PAYLOAD_CAMERA_IR_ISOTHERMS_ENABLE == 1 && PAYLOAD_CAMERA_OBJECT_DETECTION_ENABLE == 1 &&
+                      PAYLOAD_CAMERA_IR_SPOTMETER_MODE_DISABLE == 0 && PAYLOAD_CAMERA_IR_ISOTHERMS_DISABLE == 0,
+                  "mb1_sdk.h enable values changed");
+    static const std::vector<ParamOption> colorModes{
+        {PAYLOAD_CAMERA_IR_ISOTHERM_RG0_COLOR_MODE_DISABLE, "Disabled"},
+        {PAYLOAD_CAMERA_IR_ISOTHERM_RG0_COLOR_MODE_STANDARD, "Standard"},
+        {PAYLOAD_CAMERA_IR_ISOTHERM_RG0_COLOR_MODE_LINEAR_RGB, "Linear RGB"},
+        {PAYLOAD_CAMERA_IR_ISOTHERM_RG0_COLOR_MODE_LINEAR_HSV, "Linear HSV"},
+        {PAYLOAD_CAMERA_IR_ISOTHERM_RG0_COLOR_MODE_NON_LINEAR, "Non-linear"},
+        {PAYLOAD_CAMERA_IR_ISOTHERM_RG0_COLOR_MODE_SINGLE, "Single"}};  // the header lists them once, for all regions
+    static const std::vector<ParamOption> colors =
+        optionSequence({"Ice blue", "Sky blue", "Light green", "Yellow green", "Yellow", "Orange", "Red"});
+
+    static const PayloadProfile p{
+        "MB1",
+        PAYLOAD_CAMERA_VIEW_SRC,
+        viewSources,
+        PAYLOAD_CAMERA_RECORD_SRC,
+        recordSources,
+        PAYLOAD_CAMERA_IR_PALETTE,
+        irPalettes,
+        PAYLOAD_CAMERA_GIMBAL_MODE,
+        {{PAYLOAD_CAMERA_GIMBAL_MODE_OFF, "OFF"},
+         {PAYLOAD_CAMERA_GIMBAL_MODE_LOCK, "LOCK"},
+         {PAYLOAD_CAMERA_GIMBAL_MODE_FOLLOW, "FOLLOW"},
+         {PAYLOAD_CAMERA_GIMBAL_MODE_MAPPING, "MAPPING"},
+         {PAYLOAD_CAMERA_GIMBAL_MODE_RESET, "RESET"}},
+        PAYLOAD_CAMERA_TRACKING_MODE,
+        PAYLOAD_CAMERA_TRACKING_OBJ_TRACKING,
+        {
+            {"Exposure", "Camera profile", PAYLOAD_CAMERA_EO_PROFILE,
+             {{PAYLOAD_CAMERA_EO_PROFILE_CUSTOM, "Custom (settings below)"},
+              {PAYLOAD_CAMERA_EO_PROFILE_DAYLIGHT, "Daylight"},
+              {PAYLOAD_CAMERA_EO_PROFILE_NIGHT_MODE, "Night mode"}}},
+            {"Exposure", "Control mode", PAYLOAD_CAMERA_EO_CONTROL_MODE,
+             {{PAYLOAD_CAMERA_EO_CONTROL_MODE_OFF, "Off"},
+              {PAYLOAD_CAMERA_EO_CONTROL_MODE_AUTO, "Auto"},
+              {PAYLOAD_CAMERA_EO_CONTROL_MODE_USE_SCENE, "Use scene"},
+              {PAYLOAD_CAMERA_EO_CONTROL_MODE_OFF_KEEP_STATE, "Off, keep state"}}},
+            {"Exposure", "Scene", PAYLOAD_CAMERA_EO_SCENE_MODE,
+             {{PAYLOAD_CAMERA_EO_SCENE_DISABLED, "Disabled"}, {PAYLOAD_CAMERA_EO_SCENE_FACE_PRIORITY, "Face priority"},
+              {PAYLOAD_CAMERA_EO_SCENE_ACTION, "Action"}, {PAYLOAD_CAMERA_EO_SCENE_PORTRAIT, "Portrait"},
+              {PAYLOAD_CAMERA_EO_SCENE_LANDSCAPE, "Landscape"}, {PAYLOAD_CAMERA_EO_SCENE_NIGHT, "Night"},
+              {PAYLOAD_CAMERA_EO_SCENE_NIGHT_PORTRAIT, "Night portrait"}, {PAYLOAD_CAMERA_EO_SCENE_THEATRE, "Theatre"},
+              {PAYLOAD_CAMERA_EO_SCENE_BEACH, "Beach"}, {PAYLOAD_CAMERA_EO_SCENE_SNOW, "Snow"},
+              {PAYLOAD_CAMERA_EO_SCENE_SUNSET, "Sunset"}, {PAYLOAD_CAMERA_EO_SCENE_STEADY_PHOTO, "Steady photo"},
+              {PAYLOAD_CAMERA_EO_SCENE_FIREWORKS, "Fireworks"}, {PAYLOAD_CAMERA_EO_SCENE_SPORTS, "Sports"},
+              {PAYLOAD_CAMERA_EO_SCENE_PARTY, "Party"}, {PAYLOAD_CAMERA_EO_SCENE_CANDLELIGHT, "Candlelight"},
+              {PAYLOAD_CAMERA_EO_SCENE_HDR, "HDR"}}},
+            {"Exposure", "Exposure mode", PAYLOAD_CAMERA_EO_EXPOSURE_MODE,
+             {{PAYLOAD_CAMERA_EO_EXPOSURE_MODE_AUTO, "Auto"}, {PAYLOAD_CAMERA_EO_EXPOSURE_MODE_MANUAL, "Manual (time and ISO below)"}}},
+            {"Exposure", "Exposure lock", PAYLOAD_CAMERA_EO_EXPOSURE_LOCK,
+             onOff(PAYLOAD_CAMERA_EO_EXPOSURE_LOCK_ON, PAYLOAD_CAMERA_EO_EXPOSURE_LOCK_OFF)},
+            {"Exposure", "Metering", PAYLOAD_CAMERA_EO_EXPOSURE_METERING,
+             {{PAYLOAD_CAMERA_EO_EXPOSURE_METERING_AVERAGE, "Average"},
+              {PAYLOAD_CAMERA_EO_EXPOSURE_METERING_CENTER, "Center"},
+              {PAYLOAD_CAMERA_EO_EXPOSURE_METERING_SPOT, "Spot"}}},
+            {"Exposure", "Exposure time (µs, manual)", PAYLOAD_CAMERA_EO_EXPOSURE_TIME, {}, 200, 100000, 100},
+            {"Exposure", "ISO (manual exposure)", PAYLOAD_CAMERA_EO_ISO_MANUAL, {}, 100, 3200, 10},
+            {"Exposure", "ISO", PAYLOAD_CAMERA_EO_ISO,
+             {{PAYLOAD_CAMERA_EO_ISO_AUTO, "Auto"}, {PAYLOAD_CAMERA_EO_ISO_DEBLUR, "Deblur"},
+              {PAYLOAD_CAMERA_EO_ISO_100, "100"}, {PAYLOAD_CAMERA_EO_ISO_200, "200"}, {PAYLOAD_CAMERA_EO_ISO_400, "400"},
+              {PAYLOAD_CAMERA_EO_ISO_800, "800"}, {PAYLOAD_CAMERA_EO_ISO_1600, "1600"}, {PAYLOAD_CAMERA_EO_ISO_3200, "3200"}}},
+            {"Exposure", "Super HDR", PAYLOAD_CAMERA_EO_SUPER_HDR, onOff(PAYLOAD_CAMERA_EO_SUPER_HDR_ON, PAYLOAD_CAMERA_EO_SUPER_HDR_OFF)},
+            {"Exposure", "Night mode", PAYLOAD_CAMERA_EO_NIGHT_MODE,
+             {{PAYLOAD_CAMERA_EO_NIGHT_MODE_AUTO, "Auto"}, {PAYLOAD_CAMERA_EO_NIGHT_MODE_OFF, "Off"}, {PAYLOAD_CAMERA_EO_NIGHT_MODE_ON, "On"}}},
+            {"Exposure", "Night mode frame rate", PAYLOAD_CAMERA_EO_NIGHT_MODE_FPS,
+             {{PAYLOAD_CAMERA_EO_NIGHT_MODE_FPS_30, "30 fps"}, {PAYLOAD_CAMERA_EO_NIGHT_MODE_FPS_20, "20 fps"},
+              {PAYLOAD_CAMERA_EO_NIGHT_MODE_FPS_10, "10 fps"}}},
+
+            {"Image", "White balance", PAYLOAD_CAMERA_EO_WHITE_BALANCE,
+             {{PAYLOAD_CAMERA_EO_WB_OFF, "Off"}, {PAYLOAD_CAMERA_EO_WB_MANUAL_CC_TEMP, "Manual (colour temperature)"},
+              {PAYLOAD_CAMERA_EO_WB_MANUAL_RGB_GAINS, "Manual (RGB gains)"}, {PAYLOAD_CAMERA_EO_WB_AUTO, "Auto"},
+              {PAYLOAD_CAMERA_EO_WB_SHADE, "Shade"}, {PAYLOAD_CAMERA_EO_WB_INCANDESCENT, "Incandescent"},
+              {PAYLOAD_CAMERA_EO_WB_FLUORESCENT, "Fluorescent"}, {PAYLOAD_CAMERA_EO_WB_WARM_FLUORESCENT, "Warm fluorescent"},
+              {PAYLOAD_CAMERA_EO_WB_DAYLIGHT, "Daylight"}, {PAYLOAD_CAMERA_EO_WB_CLOUDY_DAYLIGHT, "Cloudy daylight"},
+              {PAYLOAD_CAMERA_EO_WB_TWILIGHT, "Twilight"}}},
+            {"Image", "Sharpness", PAYLOAD_CAMERA_EO_SHARPNESS, {}, 0, 6},
+            {"Image", "Contrast", PAYLOAD_CAMERA_EO_CONTRAST, {}, 1, 10},
+            {"Image", "Saturation", PAYLOAD_CAMERA_EO_SATURATION, {}, 0, 10},
+            {"Image", "Noise reduction", PAYLOAD_CAMERA_EO_NOISE_REDUCTION,
+             {{PAYLOAD_CAMERA_EO_NOISE_REDUCTION_OFF, "Off"}, {PAYLOAD_CAMERA_EO_NOISE_REDUCTION_FAST, "Fast"},
+              {PAYLOAD_CAMERA_EO_NOISE_REDUCTION_HQ, "High quality"}}},
+            {"Image", "ADRC", PAYLOAD_CAMERA_EO_ADRC, onOff(PAYLOAD_CAMERA_EO_ADRC_ON, PAYLOAD_CAMERA_EO_ADRC_OFF)},
+            {"Image", "Stabilizer (EIS)", PAYLOAD_CAMERA_ADV_EIS, onOff(PAYLOAD_CAMERA_ADV_EIS_ON, PAYLOAD_CAMERA_ADV_EIS_OFF)},
+            {"Image", "Flip", PAYLOAD_CAMERA_EO_FLIP, onOff(PAYLOAD_CAMERA_EO_FLIP_ON, PAYLOAD_CAMERA_EO_FLIP_OFF)},
+
+            {"Focus / Zoom", "EO zoom", PAYLOAD_CAMERA_VIDEO_ZOOM_FACTOR,
+             optionSequence({"1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x", "9x", "10x", "11x", "12x"})},
+
+            {"Thermal", "IR palette", PAYLOAD_CAMERA_IR_PALETTE, irPalettes},
+            {"Thermal", "IR zoom", PAYLOAD_CAMERA_IR_ZOOM_FACTOR, optionSequence({"1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x"})},
+            {"Thermal", "Temperature range (IR gain)", PAYLOAD_CAMERA_IR_GAIN,
+             {{PAYLOAD_CAMERA_IR_GAIN_LOW, "Low gain (up to 150 °C)"}, {PAYLOAD_CAMERA_IR_GAIN_HIGH, "High gain (up to 550 °C)"}}},
+            {"Thermal", "Contrast mode", PAYLOAD_CAMERA_IR_CONTRAST_MODE,
+             {{PAYLOAD_CAMERA_IR_CONTRAST_MODE_DEFAULT, "Default"}, {PAYLOAD_CAMERA_IR_CONTRAST_MODE_CUSTOM, "Custom"}}},
+            {"Thermal", "AGC mode", PAYLOAD_CAMERA_IR_AGC_MODE,
+             {{PAYLOAD_CAMERA_IR_AGC_MODE_NORMAL, "Normal"}, {PAYLOAD_CAMERA_IR_AGC_MODE_HOLD, "Hold"},
+              {PAYLOAD_CAMERA_IR_AGC_MODE_THRESHOLD, "Threshold"}, {PAYLOAD_CAMERA_IR_AGC_MODE_BRIGHT, "Bright"},
+              {PAYLOAD_CAMERA_IR_AGC_MODE_LINEAR, "Linear"}, {PAYLOAD_CAMERA_IR_AGC_MODE_MANUAL, "Manual"}}},
+            {"Thermal", "AGC linear percent", PAYLOAD_CAMERA_IR_AGC_LINEAR_PERCENT, {}, 0, 100, 10},
+            {"Thermal", "Image enhancement", PAYLOAD_CAMERA_ADV_IR_IMAGE_ENHANCE,
+             onOff(PAYLOAD_CAMERA_ADV_IR_IMAGE_ENHANCE_ON, PAYLOAD_CAMERA_ADV_IR_IMAGE_ENHANCE_OFF)},
+            {"Thermal", "Spot meter", PAYLOAD_CAMERA_IR_SPOTMETER_MODE, enable},
+            {"Thermal", "Spot meter units", PAYLOAD_CAMERA_IR_SPOTMETER_UNITS,
+             {{PAYLOAD_CAMERA_IR_SPOTMETER_UNITS_CELSIUS, "°C"}, {PAYLOAD_CAMERA_IR_SPOTMETER_UNITS_FAHRENHEIT, "°F"},
+              {PAYLOAD_CAMERA_IR_SPOTMETER_UNITS_KELVIN, "K"}}},
+            {"Thermal", "Spot meter size", PAYLOAD_CAMERA_IR_SPOTMETER_SIZE, {}, 16, 128, 4},
+            {"Thermal", "Isotherms", PAYLOAD_CAMERA_IR_ISOTHERMS, enable},
+            {"Thermal", "Isotherms gain", PAYLOAD_CAMERA_IR_ISOTHERMS_GAIN,
+             {{PAYLOAD_CAMERA_IR_ISOTHERMS_HIGH_GAIN, "High"}, {PAYLOAD_CAMERA_IR_ISOTHERMS_LOW_GAIN, "Low"}}},
+            {"Thermal", "Isotherm mode (advanced)", PAYLOAD_CAMERA_IR_ISOTHERM_MODE, enable},
+            {"Thermal", "Isotherm units", PAYLOAD_CAMERA_IR_ISOTHERM_UNITS,
+             {{PAYLOAD_CAMERA_IR_ISOTHERM_UNITS_KELVIN, "K"}, {PAYLOAD_CAMERA_IR_ISOTHERM_UNITS_CELSIUS, "°C"},
+              {PAYLOAD_CAMERA_IR_ISOTHERM_UNITS_FAHRENHEIT, "°F"}, {PAYLOAD_CAMERA_IR_ISOTHERM_UNITS_PERCENT, "%"},
+              {PAYLOAD_CAMERA_IR_ISOTHERM_UNITS_COUNTS, "Counts"}}},
+            {"Thermal", "Isotherm threshold", PAYLOAD_CAMERA_IR_ISOTHERM_THRESHOLD, {}, 0, 150, 5},
+            {"Isotherm regions", "Region 0 colour mode", PAYLOAD_CAMERA_IR_ISOTHERM_RG0_COLOR_MODE, colorModes},
+            {"Isotherm regions", "Region 0 colour min", PAYLOAD_CAMERA_IR_ISOTHERM_RG0_COLOR_MIN, colors},
+            {"Isotherm regions", "Region 0 colour max", PAYLOAD_CAMERA_IR_ISOTHERM_RG0_COLOR_MAX, colors},
+            {"Isotherm regions", "Region 1 colour mode", PAYLOAD_CAMERA_IR_ISOTHERM_RG1_COLOR_MODE, colorModes},
+            {"Isotherm regions", "Region 1 colour min", PAYLOAD_CAMERA_IR_ISOTHERM_RG1_COLOR_MIN, colors},
+            {"Isotherm regions", "Region 1 colour max", PAYLOAD_CAMERA_IR_ISOTHERM_RG1_COLOR_MAX, colors},
+            {"Isotherm regions", "Region 2 colour mode", PAYLOAD_CAMERA_IR_ISOTHERM_RG2_COLOR_MODE, colorModes},
+            {"Isotherm regions", "Region 2 colour min", PAYLOAD_CAMERA_IR_ISOTHERM_RG2_COLOR_MIN, colors},
+            {"Isotherm regions", "Region 2 colour max", PAYLOAD_CAMERA_IR_ISOTHERM_RG2_COLOR_MAX, colors},
+            {"Isotherm regions", "Region 3 colour mode", PAYLOAD_CAMERA_IR_ISOTHERM_RG3_COLOR_MODE, colorModes},
+            {"Isotherm regions", "Region 3 colour min", PAYLOAD_CAMERA_IR_ISOTHERM_RG3_COLOR_MIN, colors},
+            {"Isotherm regions", "Region 3 colour max", PAYLOAD_CAMERA_IR_ISOTHERM_RG3_COLOR_MAX, colors},
+            {"Isotherm regions", "Region 4 colour mode", PAYLOAD_CAMERA_IR_ISOTHERM_RG4_COLOR_MODE, colorModes},
+            {"Isotherm regions", "Region 4 colour min", PAYLOAD_CAMERA_IR_ISOTHERM_RG4_COLOR_MIN, colors},
+            {"Isotherm regions", "Region 4 colour max", PAYLOAD_CAMERA_IR_ISOTHERM_RG4_COLOR_MAX, colors},
+            {"Isotherm regions", "Region 5 colour mode", PAYLOAD_CAMERA_IR_ISOTHERM_RG5_COLOR_MODE, colorModes},
+            {"Isotherm regions", "Region 5 colour min", PAYLOAD_CAMERA_IR_ISOTHERM_RG5_COLOR_MIN, colors},
+            {"Isotherm regions", "Region 5 colour max", PAYLOAD_CAMERA_IR_ISOTHERM_RG5_COLOR_MAX, colors},
+
+            {"Video / OSD / AI", "View source", PAYLOAD_CAMERA_VIEW_SRC, viewSources},
+            {"Video / OSD / AI", "Record source", PAYLOAD_CAMERA_RECORD_SRC, recordSources},
+            {"Video / OSD / AI", "On-screen display", PAYLOAD_CAMERA_VIDEO_OSD_MODE,
+             {{PAYLOAD_CAMERA_VIDEO_OSD_MODE_DISABLE, "Off"},
+              {PAYLOAD_CAMERA_VIDEO_OSD_MODE_DEBUG, "Debug"},
+              {PAYLOAD_CAMERA_VIDEO_OSD_MODE_STATUS, "Status"}}},
+            {"Video / OSD / AI", "Storage", PAYLOAD_CAMERA_STORAGE,
+             {{PAYLOAD_CAMERA_STORAGE_INTERNAL, "Internal"}, {PAYLOAD_CAMERA_STORAGE_SDCARD, "SD card"}}},
+            {"Video / OSD / AI", "Object detection", PAYLOAD_CAMERA_OBJECT_DETECTION, enable},
+        },
+        PAYLOAD_CAMERA_GIMBAL_FW_FLAG,
+        {{PAYLOAD_CAMERA_GIMBAL_FW_FLAG_OVERWRITE, "Overwrite"}, {PAYLOAD_CAMERA_GIMBAL_FW_FLAG_FORWARD, "Forward"}},
+        PAYLOAD_CAMERA_GIMBAL_FW_FLAG_FORWARD,  // forward this app's gimbal commands to the gimbal
+    };
+    return p;
+}

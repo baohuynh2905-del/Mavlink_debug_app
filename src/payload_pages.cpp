@@ -656,6 +656,7 @@ CameraSettingsPage::CameraSettingsPage(PayloadLink *link, const MavlinkDict *dic
         } else {
             row.spin = new QSpinBox;
             row.spin->setRange(int(cs.min), int(cs.max));
+            row.spin->setSingleStep(int(cs.step));
             QPushButton *set = row.set = button(QStringLiteral("Set"), QStringLiteral("PARAM_EXT_SET %1").arg(id));
             set->setEnabled(false);
             connect(set, &QPushButton::clicked, this, [this, spin = row.spin, label, id = cs.id] {

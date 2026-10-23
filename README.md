@@ -502,9 +502,19 @@ loopback fake payload and checks that `sdkQuit()` returns in under 2 s (measured
 - **Partly tested on hardware:** gimbal OFF, RESET and MAPPING (now through the flags), photo capture, and
   recording have not been run on a VIO. Move to angle does not work on VIO software 3.1.8.21, and tracking was
   last verified on 3.1.4.18.
-- **VIO only:** other models need their own `payload_profile_<model>.cpp`. Zoom to an absolute level
-  (`setCameraZoomTarget`, a custom `MAV_CMD_USER_4`) is not exposed because its range is not
-  documented per model.
+- **Payload models:** VIO, ZIO, MB1 and OrusL are selected with **Model** in the SETTINGS drawer. The choice is
+  saved with each connection profile and rebuilds the gimbal and camera panels. A header warning appears when the
+  payload reports another model name.
+  - **Values:** each `src/payload_profile_<model>.cpp` takes its IDs and values only from that model's
+    `<model>_sdk.h`.
+  - **Tested:** only VIO was run on hardware; ZIO, MB1 and OrusL are untested.
+  - **ZIO:** EO only (no IR palette, record source or rangefinder).
+  - **OrusL:** no gain setting (its header's gain IDs are empty).
+  - **MB1:** its `C_G_*` exposure aliases, zoom/focus speed and LRF have no values in its header; AE compensation
+    and isotherm temperatures are signed. None of these are offered.
+  - **Control source:** MB1's is `GB_FW_FLAG` Overwrite/Forward. ZIO's and OrusL's headers name none.
+  - **Not exposed:** zoom to an absolute level (`setCameraZoomTarget`, a custom `MAV_CMD_USER_4`), because its
+    range is not documented per model.
 - **Live network capture:** checked only for its error path here (no root under WSL). The decoding
   and file path are tested with `.pcap` files written by libpcap.
 - **Video:** there is no recording or snapshot from the app (use the payload's own recording).

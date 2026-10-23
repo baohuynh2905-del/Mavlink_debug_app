@@ -6,6 +6,7 @@
 
 #include <QtTest>
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 
@@ -249,6 +250,33 @@ private slots:
         QCOMPARE(PayloadLink::angleDiff(-170, 170), 20.0);  // the short way round
         QCOMPARE(PayloadLink::angleDiff(170, -170), -20.0);
         QCOMPARE(PayloadLink::angleDiff(10, 5), 5.0);
+    }
+
+    // Every model: settings fit PARAM_EXT (16-char IDs), appear once, and are a list or a range
+    void allProfilesAreConsistent()
+    {
+        QCOMPARE(payloadProfiles().size(), size_t(4));
+        for (const PayloadProfile *p : payloadProfiles()) {
+            QSet<QString> ids;
+            for (const CameraSetting &c : p->cameraSettings) {
+                const QString id = QString::fromLatin1(c.id);
+                QVERIFY2(!id.isEmpty() && id.size() <= 16 && !ids.contains(id), qPrintable(QStringLiteral("%1 %2").arg(p->name, id)));
+                ids.insert(id);
+                QVERIFY2(!c.options.empty() || (c.max > c.min && c.step > 0), qPrintable(QStringLiteral("%1 %2").arg(p->name, id)));
+                QSet<unsigned> values;
+                for (const ParamOption &o : c.options) {
+                    QVERIFY2(o.label && *o.label && !values.contains(o.value), qPrintable(QStringLiteral("%1 %2").arg(p->name, id)));
+                    values.insert(o.value);
+                }
+            }
+            QVERIFY(p->gimbalModeId && p->trackingModeId && p->viewSourceId);
+            QVERIFY(!p->gimbalControlId || std::any_of(p->gimbalControls.begin(), p->gimbalControls.end(),
+                                                      [&](const ParamOption &o) { return o.value == p->gimbalControlOnboard; }));
+            QCOMPARE(&profileByName(QString::fromLatin1(p->name).toLower()), p);
+        }
+        QCOMPARE(&profileByName(QStringLiteral("unknown")), &vioProfile());
+        QCOMPARE(zioProfile().irPaletteId, nullptr);  // EO only
+        QCOMPARE(QString::fromLatin1(mb1Profile().gimbalControlId), QStringLiteral("GB_FW_FLAG"));
     }
 
     void vioProfileComesFromSdkHeader()

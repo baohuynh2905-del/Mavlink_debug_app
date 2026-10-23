@@ -2,15 +2,6 @@
 
 #include "vio_sdk.h"  // SDK libs/payload-define: the only source of these IDs and values
 
-#include <initializer_list>
-
-// Options numbered 0, 1, 2 ... in order, for the header's sequential zoom enums.
-static std::vector<ParamOption> sequence(std::initializer_list<const char *> labels)
-{
-    std::vector<ParamOption> o;
-    for (const char *l : labels) o.push_back({unsigned(o.size()), l});
-    return o;
-}
 static_assert(ZOOM_IR_8X == 7 && ZOOM_COMBINE_240X == 21 && ZOOM_SUPER_RESOLUTION_30X == 11, "vio_sdk.h zoom enums changed");
 
 const PayloadProfile &vioProfile()
@@ -39,7 +30,6 @@ const PayloadProfile &vioProfile()
         {PAYLOAD_CAMERA_IR_PALETTE_8, "8  (F1 Globow | G1 Rainbow2)"},
         {PAYLOAD_CAMERA_IR_PALETTE_9, "9  (F1 Gradedfire | G1 Tint)"},
         {PAYLOAD_CAMERA_IR_PALETTE_10, "10 (F1 Hottest | G1 BlackHot)"}};
-    auto onOff = [](unsigned on, unsigned off) { return std::vector<ParamOption>{{on, "On"}, {off, "Off"}}; };
 
     static const PayloadProfile p{
         "VIO",
@@ -148,14 +138,14 @@ const PayloadProfile &vioProfile()
              {{PAYLOAD_CAMERA_VIDEO_ZOOM_MODE_COMBINE, "Combine"},
               {PAYLOAD_CAMERA_VIDEO_ZOOM_MODE_SUPER_RESOLUTION, "Super resolution"}}},
             {"Focus / Zoom", "Combine zoom level", PAYLOAD_CAMERA_VIDEO_ZOOM_COMBINE_FACTOR,
-             sequence({"1x", "2x", "4x", "6x", "8x", "10x", "12x", "14x", "16x", "18x", "20x", "40x", "60x", "80x", "100x",
+             optionSequence({"1x", "2x", "4x", "6x", "8x", "10x", "12x", "14x", "16x", "18x", "20x", "40x", "60x", "80x", "100x",
                        "120x", "140x", "160x", "180x", "200x", "220x", "240x"})},
             {"Focus / Zoom", "Super-resolution zoom level", PAYLOAD_CAMERA_VIDEO_ZOOM_SUPER_RESOLUTION_FACTOR,
-             sequence({"1x", "2x", "4x", "6x", "8x", "10x", "12x", "14x", "16x", "18x", "20x", "30x"})},
+             optionSequence({"1x", "2x", "4x", "6x", "8x", "10x", "12x", "14x", "16x", "18x", "20x", "30x"})},
             {"Focus / Zoom", "Zoom speed", PAYLOAD_CAMERA_EO_ZOOM_SPEED, {}, 0, 7},
 
             {"Thermal", "IR palette", PAYLOAD_CAMERA_IR_PALETTE, irPalettes},
-            {"Thermal", "IR zoom", PAYLOAD_CAMERA_IR_ZOOM_FACTOR, sequence({"1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x"})},
+            {"Thermal", "IR zoom", PAYLOAD_CAMERA_IR_ZOOM_FACTOR, optionSequence({"1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x"})},
 
             {"Video / OSD / LRF", "View source", PAYLOAD_CAMERA_VIEW_SRC, viewSources},
             {"Video / OSD / LRF", "Record source", PAYLOAD_CAMERA_RECORD_SRC, recordSources},

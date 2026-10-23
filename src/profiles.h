@@ -11,6 +11,7 @@ struct ConnectionProfile {
     QString ip;
     int port = 14566;
     int timeoutS = 3;
+    QString model = QStringLiteral("VIO");  // PayloadProfile::name; unknown names fall back to VIO
 };
 
 QList<ConnectionProfile> loadProfiles(QSettings &s);

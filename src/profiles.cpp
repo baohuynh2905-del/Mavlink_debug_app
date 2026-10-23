@@ -19,7 +19,8 @@ QList<ConnectionProfile> loadProfiles(QSettings &s)
     for (int i = 0; i < n; ++i) {
         s.setArrayIndex(i);
         ConnectionProfile p{s.value(QStringLiteral("name")).toString().trimmed(), s.value(QStringLiteral("ip")).toString().trimmed(),
-                            s.value(QStringLiteral("port")).toInt(), s.value(QStringLiteral("timeoutS"), 3).toInt()};
+                            s.value(QStringLiteral("port")).toInt(), s.value(QStringLiteral("timeoutS"), 3).toInt(),
+                            s.value(QStringLiteral("model"), QStringLiteral("VIO")).toString()};
         if (check(p).isEmpty()) out << p;  // never trust stored values
     }
     s.endArray();
@@ -36,6 +37,7 @@ void saveProfiles(QSettings &s, const QList<ConnectionProfile> &profiles)
         s.setValue(QStringLiteral("ip"), profiles[i].ip);
         s.setValue(QStringLiteral("port"), profiles[i].port);
         s.setValue(QStringLiteral("timeoutS"), profiles[i].timeoutS);
+        s.setValue(QStringLiteral("model"), profiles[i].model);
     }
     s.endArray();
 }

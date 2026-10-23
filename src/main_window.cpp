@@ -150,6 +150,13 @@ MainWindow::MainWindow(QWidget *parent)
     m_port->setValue(savedOk ? savedPort : kDefaultPort);
     m_timeout->setValue(qBound(1, s.value(QStringLiteral("conn/timeoutS"), 3).toInt(), 60));
 
+    m_modelBox = new QComboBox;
+    m_modelBox->setObjectName(QStringLiteral("modelBox"));
+    for (const PayloadProfile *p : payloadProfiles()) m_modelBox->addItem(QLatin1String(p->name));
+    m_modelBox->setCurrentText(profileByName(s.value(QStringLiteral("conn/model")).toString()).name);
+    m_modelBox->setToolTip(QStringLiteral("Payload model: chooses the controls and the parameter values (from the SDK's "
+                                          "<model>_sdk.h). Only VIO was checked on hardware."));
+
     m_profileBox = new QComboBox;
     m_profileBox->setObjectName(QStringLiteral("profileBox"));
     m_profileBox->setMinimumContentsLength(14);
@@ -179,6 +186,8 @@ MainWindow::MainWindow(QWidget *parent)
     row1->addWidget(m_port);
     row1->addWidget(new QLabel(QStringLiteral("Timeout")));
     row1->addWidget(m_timeout);
+    row1->addWidget(new QLabel(QStringLiteral("Model")));
+    row1->addWidget(m_modelBox);
     row1->addStretch();
 
     m_stateBadge = new QLabel;
@@ -206,13 +215,12 @@ MainWindow::MainWindow(QWidget *parent)
 
     const MavlinkDict *dict = m_dict.isLoaded() ? &m_dict : nullptr;
     auto *commands = new CommandsPage(m_link, dict);
-    auto *gimbal = new GimbalPage(m_link, dict, vioProfile());
-    m_camera = new CameraPage(m_link, dict, vioProfile());
     m_video = new VideoPage;
     connect(m_ip, &QLineEdit::textChanged, m_video, &VideoPage::setPayloadIp);
     m_video->setPayloadIp(m_ip->text());
-    connect(m_camera, &CameraPage::trackArmedChanged, m_video->view(), &VideoView::setPickMode);
-    connect(m_video->view(), &VideoView::picked, m_camera, &CameraPage::trackAt);
+    connect(m_video->view(), &VideoView::picked, this, [this](QPointF p) { m_camera->trackAt(p); });
+    m_gimbalCol = column(new QWidget);  // pages: setModel()
+    m_cameraCol = column(new QWidget);
 
     auto *videoRow = new QHBoxLayout;
     auto *videoTitle = new QLabel(QStringLiteral("VIDEO"));
@@ -234,12 +242,12 @@ MainWindow::MainWindow(QWidget *parent)
     // --- Header ---
     auto *title = new QLabel(QStringLiteral("PAYLOAD CONTROL STATION"));
     title->setObjectName(QStringLiteral("appTitle"));
-    auto *subtitle = new QLabel(QStringLiteral("Gremsy %1 · PayloadSDK · MAVLink").arg(QLatin1String(vioProfile().name)));
-    subtitle->setObjectName(QStringLiteral("appSubtitle"));
+    m_subtitle = new QLabel;
+    m_subtitle->setObjectName(QStringLiteral("appSubtitle"));
     auto *titles = new QVBoxLayout;
     titles->setSpacing(0);
     titles->addWidget(title);
-    titles->addWidget(subtitle);
+    titles->addWidget(m_subtitle);
 
     m_nav = new QButtonGroup(this);
     auto *nav = new QHBoxLayout;
@@ -286,9 +294,10 @@ MainWindow::MainWindow(QWidget *parent)
     // --- Operate: gimbal | video | camera ---
     m_hsplit = new QSplitter(Qt::Horizontal);
     m_hsplit->setChildrenCollapsible(false);
-    m_hsplit->addWidget(panel(QStringLiteral("GIMBAL CONTROL"), column(gimbal)));
+    m_hsplit->addWidget(panel(QStringLiteral("GIMBAL CONTROL"), m_gimbalCol));
     m_hsplit->addWidget(panel({}, m_video));
-    m_hsplit->addWidget(panel(QStringLiteral("CAMERA / TELEMETRY"), column(m_camera)));
+    m_hsplit->addWidget(panel(QStringLiteral("CAMERA / TELEMETRY"), m_cameraCol));
+    setModel(profileByName(m_modelBox->currentText()));
     m_hsplit->setStretchFactor(0, 0);
     m_hsplit->setStretchFactor(1, 1);
     m_hsplit->setStretchFactor(2, 0);
@@ -361,7 +370,12 @@ MainWindow::MainWindow(QWidget *parent)
         m_ip->setText(p.ip);
         m_port->setValue(p.port);
         m_timeout->setValue(p.timeoutS);
+        if (profileByName(p.model).name != m_modelBox->currentText()) {
+            m_modelBox->setCurrentText(profileByName(p.model).name);
+            setModel(profileByName(p.model));
+        }
     });
+    connect(m_modelBox, &QComboBox::activated, this, [this] { setModel(profileByName(m_modelBox->currentText())); });
     connect(m_saveProfile, &QPushButton::clicked, this, &MainWindow::saveProfile);
     connect(m_deleteProfile, &QPushButton::clicked, this, &MainWindow::deleteProfile);
     connect(m_timeout, &QSpinBox::valueChanged, this, [this](int v) { m_link->setTimeoutMs(v * 1000); });
@@ -411,6 +425,7 @@ void MainWindow::saveSettings() const
         s.setValue(QStringLiteral("conn/port"), m_port->value());
     }
     s.setValue(QStringLiteral("conn/timeoutS"), m_timeout->value());
+    s.setValue(QStringLiteral("conn/model"), m_modelBox->currentText());
     s.setValue(QStringLiteral("conn/profile"), m_profileBox->currentIndex() > 0 ? m_profileBox->currentText() : QString());
     s.setValue(QStringLiteral("ui/geometry"), saveGeometry());
     s.setValue(QStringLiteral("ui/hsplit"), m_hsplit->saveState());
@@ -441,7 +456,7 @@ void MainWindow::saveProfile()
     const QString name = QInputDialog::getText(this, QStringLiteral("Save profile"), QStringLiteral("Profile name"),
                                                QLineEdit::Normal, current, &ok);
     if (!ok) return;
-    if (const QString err = upsertProfile(m_profiles, {name, m_ip->text(), m_port->value(), m_timeout->value()}); !err.isEmpty()) {
+    if (const QString err = upsertProfile(m_profiles, {name, m_ip->text(), m_port->value(), m_timeout->value(), m_modelBox->currentText()}); !err.isEmpty()) {
         QMessageBox::warning(this, QStringLiteral("Profile not saved"), err);
         return;
     }
@@ -463,9 +478,23 @@ void MainWindow::deleteProfile()
     reloadProfiles();
 }
 
+void MainWindow::setModel(const PayloadProfile &p)
+{
+    m_profile = &p;
+    const MavlinkDict *dict = m_dict.isLoaded() ? &m_dict : nullptr;
+    m_video->view()->setPickMode(false);
+    m_camera = new CameraPage(m_link, dict, p);
+    connect(m_camera, &CameraPage::trackArmedChanged, m_video->view(), &VideoView::setPickMode);
+    for (const auto &[col, page] : {std::pair<QScrollArea *, QWidget *>{m_gimbalCol, new GimbalPage(m_link, dict, p)}, {m_cameraCol, m_camera}}) {
+        col->setWidget(page);  // deletes the previous page
+        page->setAutoFillBackground(false);  // setWidget() turned it on; the panel colour shows through
+    }
+    m_subtitle->setText(QStringLiteral("Gremsy %1 · PayloadSDK · MAVLink").arg(QLatin1String(p.name)));
+}
+
 std::vector<BootCheck> MainWindow::bootChecks() const
 {
-    const PayloadProfile &vio = vioProfile();
+    const PayloadProfile &vio = *m_profile;
     return {
         {QStringLiteral("MAVLINK DICTIONARY"),
          m_dict.isLoaded() ? QStringLiteral("%1 XML FILES").arg(m_dict.files().size()) : QStringLiteral("NOT FOUND"), m_dict.isLoaded()},
@@ -600,6 +629,11 @@ void MainWindow::refreshOperator()
     if (m_link->droppedDatagrams()) warn << QStringLiteral("CAPTURE DROPS %1").arg(m_link->droppedDatagrams());
     if (m_stats.sendErrors) warn << QStringLiteral("SEND ERRORS %1").arg(m_stats.sendErrors);
     if (m_stats.badCrc) warn << QStringLiteral("BAD CRC %1").arg(m_stats.badCrc);
+    if (const CapturedFrame *c = m_link->telemetry().latest(MAVLINK_MSG_ID_COMPONENT_INFORMATION_BASIC)) {
+        const QString reported = fieldText(c->frame, "model_name");
+        if (!reported.isEmpty() && reported.compare(QLatin1String(m_profile->name), Qt::CaseInsensitive) != 0)
+            warn << QStringLiteral("PAYLOAD REPORTS %1, MODEL SET TO %2").arg(reported.toUpper(), QString::fromLatin1(m_profile->name).toUpper());
+    }
     m_warning->setText(warn.isEmpty() ? QString() : QStringLiteral("⚠ ") + warn.join(QStringLiteral("  ·  ")));
 
     // Video overlay

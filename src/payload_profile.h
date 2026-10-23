@@ -3,6 +3,9 @@
 // The SDK's model headers reuse macro names with different values, so each profile lives in its
 // own translation unit (payload_profile_<model>.cpp) that includes only its header.
 
+#include <QString>
+
+#include <initializer_list>
 #include <vector>
 
 struct ParamOption {
@@ -16,7 +19,7 @@ struct CameraSetting {
     const char *label;
     const char *id;
     std::vector<ParamOption> options;  // empty: a number from min to max
-    unsigned min = 0, max = 0;
+    unsigned min = 0, max = 0, step = 1;
 };
 
 struct PayloadProfile {
@@ -38,4 +41,31 @@ struct PayloadProfile {
     unsigned gimbalControlOnboard = 0;
 };
 
+// One per model, each in its own payload_profile_<model>.cpp with only that model's SDK header
 const PayloadProfile &vioProfile();
+const PayloadProfile &zioProfile();
+const PayloadProfile &mb1Profile();
+const PayloadProfile &oruslProfile();
+
+inline const std::vector<const PayloadProfile *> &payloadProfiles()
+{
+    static const std::vector<const PayloadProfile *> all{&vioProfile(), &zioProfile(), &mb1Profile(), &oruslProfile()};
+    return all;
+}
+
+inline const PayloadProfile &profileByName(const QString &name)  // VIO when unknown
+{
+    for (const PayloadProfile *p : payloadProfiles())
+        if (name.compare(QLatin1String(p->name), Qt::CaseInsensitive) == 0) return *p;
+    return vioProfile();
+}
+
+// Options numbered 0, 1, 2 ... in order, for the SDK headers' sequential enums
+inline std::vector<ParamOption> optionSequence(std::initializer_list<const char *> labels)
+{
+    std::vector<ParamOption> o;
+    for (const char *l : labels) o.push_back({unsigned(o.size()), l});
+    return o;
+}
+
+inline std::vector<ParamOption> onOff(unsigned on, unsigned off) { return {{on, "On"}, {off, "Off"}}; }

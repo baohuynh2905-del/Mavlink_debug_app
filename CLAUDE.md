@@ -40,8 +40,8 @@ results, acceptance checklist, limitations). For setup on native Ubuntu, see
 3. Ask the user for the original `C_V_RGAIN`, `C_V_BGAIN` and `C_V_ICR_THR`. They were set to 0 by
    mistake on 2026-10-23 (originals were 128–255, unknown). They have no effect while white balance is
    Auto and ICR is Manual.
-4. Optional: payload profiles for ZIO / MB1 / OrusL (`src/payload_profile_<model>.cpp`, values only
-   from `third_party/PayloadSdk/libs/payload-define/<model>_sdk.h`).
+4. ZIO / MB1 / OrusL profiles exist, but only from their headers. The user accepted them untested
+   (2026-10-23). Check them when a unit is available.
 
 ## Rules the user set
 

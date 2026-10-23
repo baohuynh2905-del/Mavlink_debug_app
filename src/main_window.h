@@ -17,7 +17,9 @@ class QLineEdit;
 class QComboBox;
 class QPushButton;
 class QSpinBox;
+class QScrollArea;
 class QSplitter;
+struct PayloadProfile;
 class QStackedWidget;
 class StatsWidget;
 class VideoPage;
@@ -48,13 +50,18 @@ private:
     void reloadProfiles(const QString &select = {});
     void saveProfile();
     void deleteProfile();
+    void setModel(const PayloadProfile &p);  // rebuilds the gimbal and camera pages for this payload model
 
     MavlinkDict m_dict;
     PayloadLink *m_link;
     InspectorWidget *m_inspector;
     StatsWidget *m_statsPage;
     VideoPage *m_video;
-    CameraPage *m_camera;
+    CameraPage *m_camera = nullptr;
+    const PayloadProfile *m_profile = nullptr;
+    QScrollArea *m_gimbalCol, *m_cameraCol;
+    QComboBox *m_modelBox;
+    QLabel *m_subtitle;
 
     QList<ConnectionProfile> m_profiles;
     QComboBox *m_profileBox;
