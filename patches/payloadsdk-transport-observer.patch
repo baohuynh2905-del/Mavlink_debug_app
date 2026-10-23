@@ -64,21 +64,24 @@ index a57a7ea..fad9886 100644
  
      return true;
 diff --git a/libs/payloadSdkInterface.h b/libs/payloadSdkInterface.h
-index 1a243d9..3b6c265 100644
+index 1a243d9..6d0e891 100644
 --- a/libs/payloadSdkInterface.h
 +++ b/libs/payloadSdkInterface.h
-@@ -172,6 +172,10 @@ public:
+@@ -172,6 +172,13 @@ public:
      void regPayloadDetectionChanged(payload_detection_callback_t func);
      payload_detection_callback_t __notifyPayloadDetectionChanged = NULL;
  
 +    // App patch: observe every raw RX datagram and TX frame. Register before sdkInitConnection().
 +    void regTransportObserver(transport_observer_t func);
 +    transport_observer_t __notifyTransport = NULL;
++    // App patch: the flags setGimbalSpeed() sends. They set the gimbal mode on VIO 3.1.8.21, and the SDK only
++    // refreshes them while a regPayloadParamChanged() callback is set.
++    void setGimbalDeviceFlags(uint16_t flags) { current_gb_device_flags = flags; }
 +
  
      /**
       * Init connection to payload
-@@ -372,8 +376,9 @@ private:
+@@ -372,8 +379,9 @@ private:
      pthread_t thrd_request_params;
  
      uint8_t payload_ctrl_type = CONTROL_METHOD;
@@ -89,6 +92,15 @@ index 1a243d9..3b6c265 100644
  
      bool time_to_exit = false;
  
+@@ -382,7 +390,7 @@ private:
+     bool is_send_stream_request = false;
+ 
+     uint32_t current_gimbal_mode;
+-    uint16_t current_gb_device_flags;
++    uint16_t current_gb_device_flags = 0;  // App patch: was never initialised
+ 
+     std::map<uint16_t, StatusTextBuffer> statustext_buffers;
+ public:
 diff --git a/libs/third-party/mavlink/include/generic_port.h b/libs/third-party/mavlink/include/generic_port.h
 index 03e02b3..8532a02 100644
 --- a/libs/third-party/mavlink/include/generic_port.h

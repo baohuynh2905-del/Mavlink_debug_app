@@ -8,6 +8,7 @@
 #include "telemetry.h"
 
 #include <QByteArray>
+#include <QHash>
 #include <QMap>
 #include <QObject>
 #include <QRectF>
@@ -71,6 +72,7 @@ public:
     bool gimbalRate(double pitchDps, double rollDps, double yawDps, bool track = true);
     bool cameraParam(const QString &label, const char *paramId, quint32 value);  // then reads the value back
     bool requestCameraSettings();  // PARAM_EXT_REQUEST_LIST: every setting arrives as PARAM_EXT_VALUE
+    void readMissingCameraSetting(const char *paramId);  // call freely: re-asks at most every 2 s, untracked
     bool cameraZoom(int zoomType, float value, const QString &label);   // MAV_CMD_SET_CAMERA_ZOOM
     bool cameraFocus(int focusType, float value, const QString &label); // MAV_CMD_SET_CAMERA_FOCUS
     bool cameraMode(int cameraMode);                                    // CAMERA_MODE_IMAGE / _VIDEO
@@ -112,6 +114,7 @@ private:
     void poll();
     void setState(LinkState s, const QString &error = {});
     bool ready();
+    bool setMotionFlags();  // flags for the next rate/angle command; false (commandError) until the gimbal reported
     template <class Work, class Done> void runInWorker(Work work, Done done);
 
     struct Datagram {
@@ -147,4 +150,8 @@ private:
     TelemetryStore m_telemetry;
     QString m_commandError;
     bool m_autoInfoSent = false;
+    QHash<QString, qint64> m_settingReads;  // param_id -> last PARAM_EXT_REQUEST_READ (ms)
+    qint64 m_listMs = -1;                    // last PARAM_EXT_REQUEST_LIST (ms)
+    quint16 m_modeFlags = 0;  // last mode commanded by gimbalMode()
+    qint64 m_modeFlagsMs = -1;
 };

@@ -297,6 +297,7 @@ void GimbalPage::refresh()
     }
 
     if (m_control) {
+        m_link->readMissingCameraSetting(m_profile.gimbalControlId);
         const auto &cam = m_link->telemetry().cameraParams();
         const auto it = cam.constFind(QString::fromLatin1(m_profile.gimbalControlId));
         const int idx = it == cam.cend() ? -1 : m_control->findData(unsigned(it->value));
@@ -695,6 +696,7 @@ void CameraSettingsPage::refresh()
     const qint64 n = now();
     const int once = std::numeric_limits<int>::max();  // read on request: show the age, never "stale"
     for (const Row &r : m_rows) {
+        m_link->readMissingCameraSetting(r.setting->id);
         const auto it = params.constFind(QString::fromLatin1(r.setting->id));
         if (r.set) r.set->setEnabled(it != params.cend());
         if (it == params.cend()) {

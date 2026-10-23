@@ -76,6 +76,12 @@ results, acceptance checklist, limitations). For setup on native Ubuntu, see
   × π/18; that compensation is gone.
 - **Gimbal angle:** works on 3.1.4.18 (yaw lands about 2.7° off); no effect at all on 3.1.8.21 by any route
   tried. Ask Gremsy.
+- **Gimbal flags on every command:** each `GIMBAL_DEVICE_SET_ATTITUDE` (rate, angle) carries mode flags, and
+  3.1.8.21 applies them. The SDK never initialised its copy (`current_gb_device_flags`) and refreshes it only
+  with a `regPayloadParamChanged()` callback. The app patch adds `setGimbalDeviceFlags()`;
+  `PayloadLink::setMotionFlags()` sends the reported mode, or for 1 s the mode just commanded.
+- **Camera settings list:** the reply is a burst, and about a third of it can be lost on the USB link. Pages call
+  `readMissingCameraSetting()`, which re-asks by ID every 2 s.
 - **SDK camera compid:** the SDK addresses the camera at 101 until it hears compid 100, so the automatic
   requests wait for the camera's heartbeat.
 - **Tracking:**

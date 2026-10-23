@@ -328,6 +328,21 @@ private slots:
                                  find(link, QStringLiteral("Auto: Request component info"))->state == TrackedCommand::Accepted, 3000);
         QTRY_COMPARE_WITH_TIMEOUT(find(link, QStringLiteral("Auto: Read all camera settings"))->targetComponent, int(MAV_COMP_ID_CAMERA), 3000);
 
+        // A setting lost from the list burst is asked for by ID: not while the list arrives, then at most every 2 s
+        auto readOf = [](const MavFrame &x, const char *want) {
+            char pid[17] = {0};
+            if (x.msgid != MAVLINK_MSG_ID_PARAM_EXT_REQUEST_READ) return false;
+            mavlink_msg_param_ext_request_read_get_param_id(&x.msg, pid);
+            return QLatin1String(pid) == QLatin1String(want);
+        };
+        link.readMissingCameraSetting("GB_FW_FLAG");
+        QVERIFY(!waitTx(fake, [&](const MavFrame &x) { return readOf(x, "GB_FW_FLAG"); }, nullptr, 500));
+        QTest::qWait(1600);
+        link.readMissingCameraSetting("GB_FW_FLAG");
+        QVERIFY(waitTx(fake, [&](const MavFrame &x) { return readOf(x, "GB_FW_FLAG"); }));
+        link.readMissingCameraSetting("GB_FW_FLAG");
+        QVERIFY(!waitTx(fake, [&](const MavFrame &x) { return readOf(x, "GB_FW_FLAG"); }, nullptr, 500));
+
         // Camera parameter: PARAM_EXT_SET carries the uint32 bytes, as setPayloadCameraParam() encodes them
         QVERIFY(link.cameraParam(QStringLiteral("View source"), vioProfile().viewSourceId, 1));
         QVERIFY(waitTx(fake, [](const MavFrame &x) { return x.msgid == MAVLINK_MSG_ID_PARAM_EXT_SET; }, &f));
@@ -358,6 +373,7 @@ private slots:
 
         // Gimbal: mode is refused until the gimbal has reported its flags
         QVERIFY(!link.gimbalMode(GimbalFlags::Change::Follow, QStringLiteral("Follow")));
+        QVERIFY(!link.gimbalRate(0, 0, 10));  // its flags would set the mode: refused while they are unknown
         QVERIFY(link.commandError().contains(QStringLiteral("GIMBAL_DEVICE_ATTITUDE_STATUS")));
         fake.send(gimbalStatus(GIMBAL_DEVICE_FLAGS_YAW_LOCK | GIMBAL_DEVICE_FLAGS_PITCH_LOCK));
         QTRY_VERIFY_WITH_TIMEOUT(link.telemetry().latest(MAVLINK_MSG_ID_GIMBAL_DEVICE_ATTITUDE_STATUS), 3000);
@@ -374,12 +390,18 @@ private slots:
         mavlink_msg_gimbal_device_set_attitude_get_q(&f.msg, q);
         mavlink_quaternion_to_euler(q, &r, &p, &y);
         QVERIFY(std::abs(p * 180 / M_PI - (-30)) < 0.01 && std::abs(y * 180 / M_PI - 10) < 0.01);
+        // ... and repeats the mode just commanded (Follow), not the reported LOCK, so it cannot undo the mode change
+        QCOMPARE(mavlink_msg_gimbal_device_set_attitude_get_flags(&f.msg), quint16(GIMBAL_DEVICE_FLAGS_PITCH_LOCK));
 
         // Rate: rad/s on the wire, as MAVLink defines it (a VIO on 3.1.8.21 turns at the requested speed)
         QVERIFY(link.gimbalRate(0, 0, 10));
         QVERIFY(waitTx(fake, [](const MavFrame &x) { return x.msgid == MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE; }, &f));
         QVERIFY(std::abs(mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_z(&f.msg) - float(10 * M_PI / 180)) < 1e-5f);
         QTRY_VERIFY_WITH_TIMEOUT(find(link, QStringLiteral("Gimbal rate pitch 0°/s roll 0°/s yaw 10°/s"))->state == TrackedCommand::NoAckDefined, 3000);
+        QTest::qWait(1100);  // the commanded mode is no longer pending: the reported flags are repeated
+        QVERIFY(link.gimbalRate(0, 0, 0));
+        QVERIFY(waitTx(fake, [](const MavFrame &x) { return x.msgid == MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE; }, &f));
+        QCOMPARE(mavlink_msg_gimbal_device_set_attitude_get_flags(&f.msg), quint16(GIMBAL_DEVICE_FLAGS_YAW_LOCK | GIMBAL_DEVICE_FLAGS_PITCH_LOCK));
 
         // Tracking: MAV_CMD_USER_4 to the payload core, param3 0 = mode, 1 = target position
         QVERIFY(!link.trackingTarget(2000, 10));  // outside the tracker frame

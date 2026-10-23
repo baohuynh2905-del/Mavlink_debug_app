@@ -60,6 +60,9 @@ void PayloadLink::connectTo(const QString &ip, int port)
     m_heartbeats.clear();
     m_openSinceMs = -1;
     m_telemetry.clear();
+    m_modeFlagsMs = -1;
+    m_settingReads.clear();
+    m_listMs = -1;
     m_autoInfoSent = false;
 
     T_ConnInfo ci{};
@@ -205,6 +208,8 @@ bool PayloadLink::gimbalMode(GimbalFlags::Change change, const QString &label)
     GimbalAttitude a;
     gimbalAttitude(status->frame, &a);
     const quint16 flags = GimbalFlags::apply(a.flags, change);
+    m_modeFlags = flags;
+    m_modeFlagsMs = nowMs();
     m_tracker.expect(QStringLiteral("%1 (flags 0x%2)").arg(label).arg(flags, 4, 16, QLatin1Char('0')),
                      MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE, 0, {}, nowMs(), [flags](const MavFrame &f) {
                          return mavlink_msg_gimbal_device_set_attitude_get_flags(&f.msg) == flags;
@@ -224,9 +229,23 @@ bool PayloadLink::gimbalHome()
     return true;
 }
 
+// Every GIMBAL_DEVICE_SET_ATTITUDE carries mode flags, and VIO 3.1.8.21 applies them: a rate or angle command must
+// repeat the gimbal's current mode. That is the reported one, or for 1 s the mode just commanded (not reported yet).
+bool PayloadLink::setMotionFlags()
+{
+    const CapturedFrame *status = m_telemetry.latest(MAVLINK_MSG_ID_GIMBAL_DEVICE_ATTITUDE_STATUS);
+    GimbalAttitude a;
+    if (!status || !gimbalAttitude(status->frame, &a)) {
+        m_commandError = QStringLiteral("No GIMBAL_DEVICE_ATTITUDE_STATUS received yet: current gimbal flags unknown");
+        return false;
+    }
+    m_sdk->setGimbalDeviceFlags(m_modeFlagsMs >= 0 && nowMs() - m_modeFlagsMs < 1000 ? m_modeFlags : a.flags);
+    return true;
+}
+
 bool PayloadLink::gimbalAngle(double pitch, double roll, double yaw)
 {
-    if (!ready()) return false;
+    if (!ready() || !setMotionFlags()) return false;
     if (std::abs(pitch) > kPitchLimit || std::abs(roll) > kRollLimit || std::abs(yaw) > kYawLimit) {
         m_commandError = QStringLiteral("Angle outside SDK limits (pitch ±90°, roll ±180°, yaw ±180°)");
         return false;
@@ -244,7 +263,7 @@ bool PayloadLink::gimbalAngle(double pitch, double roll, double yaw)
 
 bool PayloadLink::gimbalRate(double pitch, double roll, double yaw, bool track)
 {
-    if (!ready()) return false;
+    if (!ready() || !setMotionFlags()) return false;
     if (track) {
         const float p = float(pitch * M_PI / 180), y = float(yaw * M_PI / 180);
         m_tracker.expect(QStringLiteral("Gimbal rate pitch %1°/s roll %2°/s yaw %3°/s").arg(pitch).arg(roll).arg(yaw),
@@ -281,8 +300,27 @@ bool PayloadLink::requestCameraSettings()
     if (!ready()) return false;
     m_tracker.expect(QStringLiteral("Read all camera settings"), MAVLINK_MSG_ID_PARAM_EXT_REQUEST_LIST, 0, {}, nowMs());
     m_sdk->getPayloadCameraSettingList();
+    m_listMs = nowMs();
     emit commandsChanged();
     return true;
+}
+
+// The camera answers a list request with a burst of PARAM_EXT_VALUE, and on the VIO's USB link a third of them can
+// be lost. So a setting still missing is asked for by ID, at most every 2 s, never while a list is arriving, and
+// only once the camera was heard (before that the SDK addresses compid 101).
+void PayloadLink::readMissingCameraSetting(const char *paramId)
+{
+    const QString id = QString::fromLatin1(paramId);
+    const qint64 now = nowMs();
+    if (!m_sdk || !isOpen(m_state) || !m_autoInfoSent || m_telemetry.cameraParams().contains(id) ||
+        (m_listMs >= 0 && now - m_listMs < 2000))
+        return;
+    qint64 &last = m_settingReads[id];
+    if (last && now - last < 2000) return;
+    last = now;
+    char buf[17] = {0};
+    strncpy(buf, paramId, 16);
+    m_sdk->getPayloadCameraSettingByID(buf);
 }
 
 bool PayloadLink::cameraZoom(int zoomType, float value, const QString &label)
@@ -442,6 +480,7 @@ bool PayloadLink::requestPayloadInfo(bool automatic)
     m_sdk->getPayloadCaptureStatus();
     m_tracker.expect(p + QStringLiteral("Read all camera settings"), MAVLINK_MSG_ID_PARAM_EXT_REQUEST_LIST, 0, {}, now);
     m_sdk->getPayloadCameraSettingList();  // includes the gimbal control source the gimbal panel shows
+    m_listMs = now;
 
     // DEBUG parameter streams, with the intervals (ms) Gremsy's tests/ui_demo/main.cpp uses
     static const std::pair<int, int> rates[] = {

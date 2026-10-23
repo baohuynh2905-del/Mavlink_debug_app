@@ -350,6 +350,9 @@ Results from a VIO over USB-C (RNDIS, laptop at `192.168.55.100`, 2026-10-22):
     the flags, and the `GB_MODE` DEBUG value follows (2 → 1 → 2).
   - **Rate:** now in real units: 10°/s gave a 12.2°/s peak and 13° in about 1 s, so the × 18/π compensation used
     for 3.1.4.18 was removed.
+  - **Mode kept while moving:** every rate/angle message carries mode flags, which 3.1.8.21 applies. The SDK
+    sent uninitialised flags (the arrows switched LOCK to FOLLOW). The app now sends the gimbal's mode
+    (patched SDK setter).
   - **Angle:** move to angle has no effect on 3.1.8.21, through `q` in `GIMBAL_DEVICE_SET_ATTITUDE` (NaN or zero
     rates, FOLLOW or LOCK) or `MAV_CMD_DO_MOUNT_CONTROL` (denied), even with Onboard computer. Open question for
     Gremsy.
