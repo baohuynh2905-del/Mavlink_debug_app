@@ -157,7 +157,7 @@ private slots:
             61440, 10240, 51200, 0, 0, STORAGE_TYPE_SD, nullptr, 0);
         fake.send(m);
         QTRY_VERIFY_WITH_TIMEOUT(w.link()->telemetry().latest(MAVLINK_MSG_ID_STORAGE_INFORMATION), 3000);
-        QVERIFY(w.link()->gimbalAngle(-30, 0, 10));
+        QVERIFY(w.link()->gimbalAngle(-30, 12));  // already there: ends at once
 
         // Picking a point on the video sends nothing until the tracker is armed: a bare target would move the gimbal
         auto *camera = w.findChild<CameraPage *>();

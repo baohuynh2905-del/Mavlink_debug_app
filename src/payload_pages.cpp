@@ -180,25 +180,28 @@ GimbalPage::GimbalPage(PayloadLink *link, const MavlinkDict *dict, const Payload
         return s;
     };
     m_pitch = spin(PayloadLink::kPitchLimit, QStringLiteral("°"));
-    m_roll = spin(PayloadLink::kRollLimit, QStringLiteral("°"));
     m_yaw = spin(PayloadLink::kYawLimit, QStringLiteral("°"));
     QPushButton *move = button(QStringLiteral("Move to angle"),
-                               QStringLiteral("GIMBAL_DEVICE_SET_ATTITUDE. It has no ACK: the measured attitude confirms it. "
-                                              "Limits are the ones PayloadSdkInterface::setGimbalSpeed() enforces."), "primary");
+                               QStringLiteral("Turns the gimbal to the angles with rate commands, at most the Speed above, "
+                                              "reading its measured attitude, and stops within %1°. (A VIO on software 3.1.8.21 "
+                                              "accepts no angle command.) Yaw is in the frame the gimbal reports. Roll is held "
+                                              "level by the gimbal.").arg(PayloadLink::kAngleTolerance), "primary");
     connect(move, &QPushButton::clicked, this, [this] {
-        const bool ok = m_link->gimbalAngle(m_pitch->value(), m_roll->value(), m_yaw->value());
+        const bool ok = m_link->gimbalAngle(m_pitch->value(), m_yaw->value(), m_speed->value());
         report(ok);
         if (ok) {
             m_haveCommand = true;
             m_cmdPitch = m_pitch->value();
             m_cmdYaw = m_yaw->value();
-            m_commanded->setText(QStringLiteral("pitch %1, roll %2, yaw %3")
-                                     .arg(deg(m_pitch->value()), deg(m_roll->value()), deg(m_yaw->value())));
+            m_commanded->setText(QStringLiteral("pitch %1, yaw %2: moving").arg(deg(m_cmdPitch), deg(m_cmdYaw)));
         }
+    });
+    connect(link, &PayloadLink::angleFinished, this, [this](bool reached, const QString &detail) {
+        report(reached);
+        m_commanded->setText(QStringLiteral("pitch %1, yaw %2: %3").arg(deg(m_cmdPitch), deg(m_cmdYaw), detail.toHtmlEscaped()));
     });
     auto *angle = new QFormLayout;
     angle->addRow(QStringLiteral("Pitch (±90°)"), m_pitch);
-    angle->addRow(QStringLiteral("Roll (±180°)"), m_roll);
     angle->addRow(QStringLiteral("Yaw (±180°)"), m_yaw);
     angle->addRow(move);
 

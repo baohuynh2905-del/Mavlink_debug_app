@@ -82,7 +82,7 @@ static bool safe(QString *why)
     GimbalAttitude a;
     qint64 age = 0;
     if (g_link->state() != LinkState::Heartbeat) *why = QStringLiteral("link state %1").arg(linkStateText(g_link->state()));
-    else if (!attitude(&a, &age) || age > 1000) *why = QStringLiteral("gimbal telemetry missing or stale");
+    else if (!attitude(&a, &age) || age > 1500) *why = QStringLiteral("gimbal telemetry missing or stale");  // VIO 3.1.8.21 pauses up to 0.8 s
     else if (a.failureFlags) *why = QStringLiteral("gimbal failure flags 0x%1").arg(a.failureFlags, 0, 16);
     else return true;
     return false;
@@ -216,12 +216,21 @@ int main(int argc, char *argv[])
 
     if (steps.contains(QLatin1String("angle"))) {
     if (!safe(&why)) { log(QStringLiteral("ABORT: ") + why); return 1; }
-    link.gimbalAngle(-10, 0, yaw0);
-    settle(QStringLiteral("GIMBAL_DEVICE_SET_ATTITUDE pitch -10°"));
-    check(reachPitchYaw(-10, yaw0, 4000), QStringLiteral("pitch -10° confirmed by telemetry"));
-    link.gimbalAngle(pitch0, 0, yaw0);
-    settle(QStringLiteral("GIMBAL_DEVICE_SET_ATTITUDE back to start"));
-    check(reachPitchYaw(pitch0, yaw0, 4000), QStringLiteral("back to start pitch"));
+    // Steered by rate: wait for the steering's own verdict (0.5° tolerance), then confirm from telemetry
+    std::optional<bool> reached;
+    const auto steerConn = QObject::connect(&link, &PayloadLink::angleFinished, [&](bool ok, const QString &detail) {
+        reached = ok;
+        log(QStringLiteral("  steering: ") + detail);
+    });
+    for (const auto &[p, y] : {std::pair{-10.0, yaw0}, std::pair{pitch0, yaw0}, std::pair{pitch0, yaw0 + 20}, std::pair{pitch0, yaw0}}) {
+        reached.reset();
+        link.gimbalAngle(p, y);
+        settle(QStringLiteral("move to pitch %1°, yaw %2° (steered by rate)").arg(p, 0, 'f', 1).arg(y, 0, 'f', 1));
+        waitUntil([&] { return reached.has_value(); }, 20000);
+        check(reached.value_or(false), QStringLiteral("steering reached pitch %1°, yaw %2°").arg(p, 0, 'f', 1).arg(y, 0, 'f', 1));
+        check(reachPitchYaw(p, y, 1000, 0.6, 0.6), QStringLiteral("telemetry within 0.6°"));
+    }
+    QObject::disconnect(steerConn);
     }
 
     if (steps.contains(QLatin1String("rate"))) {
@@ -307,7 +316,7 @@ int main(int argc, char *argv[])
     check(waitUntil([&] { return trk().trackMode.value_or(-1) == PayloadLink::TrackStop; }, 2000), QStringLiteral("mode STOP reported"));
 
     // Off-centre pick after an angle command (the case that never followed): the gimbal must turn to it
-    link.gimbalAngle(pitch0, 0, yaw0);
+    link.gimbalAngle(pitch0, yaw0);
     settle(QStringLiteral("angle hold at the start attitude"));
     pause(1500);
     GimbalAttitude s0;
@@ -333,7 +342,7 @@ int main(int argc, char *argv[])
     link.trackingMode(PayloadLink::TrackStop);
     settle(QStringLiteral("tracker STOP"));
     check(waitUntil([&] { return trk().trackMode.value_or(-1) == PayloadLink::TrackStop; }, 2000), QStringLiteral("mode STOP reported"));
-    link.gimbalAngle(pitch0, 0, yaw0);
+    link.gimbalAngle(pitch0, yaw0);
     settle(QStringLiteral("angle back to start"));
     check(reachPitchYaw(pitch0, yaw0, 5000), QStringLiteral("back to start"));
     }

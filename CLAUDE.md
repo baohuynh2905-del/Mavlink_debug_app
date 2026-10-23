@@ -74,8 +74,13 @@ results, acceptance checklist, limitations). For setup on native Ubuntu, see
   - It is a stored setting. The user chose to switch it from the gimbal panel themselves; tests restore it.
 - **Gimbal rate:** in real units on 3.1.8.21 (10°/s gives about 12°/s peak). 3.1.4.18 turned at
   × π/18; that compensation is gone.
-- **Gimbal angle:** works on 3.1.4.18 (yaw lands about 2.7° off); no effect at all on 3.1.8.21 by any route
-  tried. Ask Gremsy.
+- **Gimbal angle:** works on 3.1.4.18 (yaw lands about 2.7° off). On 3.1.8.21 no angle command works, so
+  `gimbalAngle()` steers by rate from the measured attitude (gain 1/s, 0.5° tolerance); this was verified.
+  If Gremsy names a real angle command, swap it in.
+- **Attitude stream (3.1.8.21):** bursts at 10 Hz with pauses of 0.6–0.8 s every second. Staleness limits
+  must allow 1.5 s.
+- **Auto info request:** waits 300 ms after the first camera frame. The SDK's own message thread updates the
+  camera compid only after the transport observer has already seen the frame.
 - **Gimbal flags on every command:** each `GIMBAL_DEVICE_SET_ATTITUDE` (rate, angle) carries mode flags, and
   3.1.8.21 applies them. The SDK never initialised its copy (`current_gb_device_flags`) and refreshes it only
   with a `regPayloadParamChanged()` callback. The app patch adds `setGimbalDeviceFlags()`;

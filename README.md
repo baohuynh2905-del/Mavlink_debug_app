@@ -353,9 +353,16 @@ Results from a VIO over USB-C (RNDIS, laptop at `192.168.55.100`, 2026-10-22):
   - **Mode kept while moving:** every rate/angle message carries mode flags, which 3.1.8.21 applies. The SDK
     sent uninitialised flags (the arrows switched LOCK to FOLLOW). The app now sends the gimbal's mode
     (patched SDK setter).
-  - **Angle:** move to angle has no effect on 3.1.8.21, through `q` in `GIMBAL_DEVICE_SET_ATTITUDE` (NaN or zero
-    rates, FOLLOW or LOCK) or `MAV_CMD_DO_MOUNT_CONTROL` (denied), even with Onboard computer. Open question for
-    Gremsy.
+  - **Angle:** no angle command works on 3.1.8.21: `q` in `GIMBAL_DEVICE_SET_ATTITUDE` is ignored (NaN or zero
+    rates, FOLLOW or LOCK), `MAV_CMD_DO_MOUNT_CONTROL` in angle mode is denied (in mode 0 it acts as a rate), and
+    the gimbal-manager commands are unsupported. **Move to angle is therefore steered by rate**
+    (`PayloadLink::gimbalAngle()`):
+    - The rate is proportional to the remaining pitch/yaw error (gain 1/s), capped at the Speed slider.
+    - It is computed from the measured attitude every 100 ms and stops within 0.5°.
+    - It stops if the attitude is older than 1.5 s or the move times out; any other gimbal command cancels it.
+    - Roll is not steered. The gimbal's attitude stream pauses for up to 0.8 s every second, which the low gain
+      tolerates.
+    - Measured on 2026-10-23: 10° pitch and 20° yaw moves each took about 2.5 s and ended 0.1–0.5° off.
 - **Commands on software 3.1.4.18** (`build/hw_vio_commands --ip 192.168.55.1 --steps camera,angle,rate,mode-param,tracking,settings`;
   59 checks, all passed on 2026-10-23, before the update; `mode-param` has since been removed; small motions,
   each undone; no photo or recording):

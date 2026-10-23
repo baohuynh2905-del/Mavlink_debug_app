@@ -68,8 +68,16 @@ public:
     // They return false (reason in commandError()) when the link is not open or input is invalid.
     bool gimbalMode(GimbalFlags::Change change, const QString &label);  // needs observed gimbal flags
     bool gimbalHome();                                                // NEUTRAL set, cleared 100 ms later
-    bool gimbalAngle(double pitchDeg, double rollDeg, double yawDeg);
+    // Steers pitch and yaw to the angles with rate commands (no angle command works on VIO 3.1.8.21), at most
+    // maxDps, from the measured attitude; angleFinished() reports the end. Any other gimbal command cancels it.
+    bool gimbalAngle(double pitchDeg, double yawDeg, double maxDps = 30);
     bool gimbalRate(double pitchDps, double rollDps, double yawDps, bool track = true);
+    // The steering law, public for tests: rates (deg/s) for the remaining errors (deg); 0 within kAngleTolerance.
+    static void steerRates(double errPitch, double errYaw, double maxDps, double *pitchDps, double *yawDps);
+    static double angleDiff(double target, double measured);  // shortest way round, -180..180
+    // Gain 1/s: the VIO's attitude stream pauses up to 0.8 s, and blind for that long the gimbal covers at most 80% of
+    // the error, so it cannot overshoot.
+    static constexpr double kAngleTolerance = 0.5, kSteerGain = 1.0;
     bool cameraParam(const QString &label, const char *paramId, quint32 value);  // then reads the value back
     bool requestCameraSettings();  // PARAM_EXT_REQUEST_LIST: every setting arrives as PARAM_EXT_VALUE
     void readMissingCameraSetting(const char *paramId);  // call freely: re-asks at most every 2 s, untracked
@@ -101,20 +109,23 @@ public:
     static QString payloadParamName(int index);
     static QString sdkVersion();  // PayloadSDK's SDK_VERSION
 
-    // Gimbal angle limits enforced by PayloadSdkInterface::setGimbalSpeed() in INPUT_ANGLE mode.
-    static constexpr double kPitchLimit = 90, kRollLimit = 180, kYawLimit = 180;
+    // Gimbal angle limits (the ones PayloadSdkInterface::setGimbalSpeed() enforces in INPUT_ANGLE mode)
+    static constexpr double kPitchLimit = 90, kYawLimit = 180;
 
 signals:
     void stateChanged();
     void framesCaptured(const std::vector<CapturedFrame> &frames);  // GUI thread, in observation order
     void commandsChanged();
+    void angleFinished(bool reached, const QString &detail);  // gimbalAngle() ended; detail also in commandError()
 
 private:
     void onTransport(int dir, const uint8_t *data, int len, const sockaddr_in *peer, int sysErrno);
     void poll();
     void setState(LinkState s, const QString &error = {});
     bool ready();
-    bool setMotionFlags();  // flags for the next rate/angle command; false (commandError) until the gimbal reported
+    bool setMotionFlags();
+    void steerStep();                              // 100 ms, from poll()
+    void endSteer(bool reached, const QString &detail);  // flags for the next rate/angle command; false (commandError) until the gimbal reported
     template <class Work, class Done> void runInWorker(Work work, Done done);
 
     struct Datagram {
@@ -152,6 +163,12 @@ private:
     bool m_autoInfoSent = false;
     QHash<QString, qint64> m_settingReads;  // param_id -> last PARAM_EXT_REQUEST_READ (ms)
     qint64 m_listMs = -1;                    // last PARAM_EXT_REQUEST_LIST (ms)
+    qint64 m_cameraSeenMs = -1;              // first frame from the camera this connection
+    struct Steer {
+        double pitch, yaw, maxDps;
+        qint64 deadlineMs;
+    };
+    std::optional<Steer> m_steer;
     quint16 m_modeFlags = 0;  // last mode commanded by gimbalMode()
     qint64 m_modeFlagsMs = -1;
 };

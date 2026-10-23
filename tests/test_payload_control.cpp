@@ -51,11 +51,11 @@ static mavlink_message_t paramExt(bool ack, const char *id, uint8_t from, uint8_
     return m;
 }
 
-static mavlink_message_t gimbalStatus(quint16 flags)
+static mavlink_message_t gimbalStatus(quint16 flags, double pitchDeg = -30, double yawDeg = 10)
 {
     mavlink_message_t m;
     float q[4];
-    mavlink_euler_to_quaternion(0, float(-30 * M_PI / 180), float(10 * M_PI / 180), q);
+    mavlink_euler_to_quaternion(0, float(pitchDeg * M_PI / 180), float(yawDeg * M_PI / 180), q);
     mavlink_msg_gimbal_device_attitude_status_pack_chan(1, MAV_COMP_ID_GIMBAL, MAVLINK_COMM_0, &m, 0, 0, 0, flags, q,
                                                         0, 0, 0, 0, NAN, NAN, 0);
     return m;
@@ -237,6 +237,20 @@ private slots:
         QVERIFY(s.cameraParams().contains(QStringLiteral("C_V_GAIN_HS_LONG")));
     }
 
+    void steeringLaw()
+    {
+        double p, y;
+        PayloadLink::steerRates(10, -3, 30, &p, &y);
+        QCOMPARE(p, 10.0);   // gain x error
+        QCOMPARE(y, -3.0);
+        PayloadLink::steerRates(40, 0.4, 30, &p, &y);
+        QCOMPARE(p, 30.0);   // capped
+        QCOMPARE(y, 0.0);    // within the tolerance
+        QCOMPARE(PayloadLink::angleDiff(-170, 170), 20.0);  // the short way round
+        QCOMPARE(PayloadLink::angleDiff(170, -170), -20.0);
+        QCOMPARE(PayloadLink::angleDiff(10, 5), 5.0);
+    }
+
     void vioProfileComesFromSdkHeader()
     {
         const PayloadProfile &p = vioProfile();
@@ -382,20 +396,36 @@ private slots:
         QCOMPARE(mavlink_msg_gimbal_device_set_attitude_get_flags(&f.msg), quint16(GIMBAL_DEVICE_FLAGS_PITCH_LOCK));
         QTRY_VERIFY_WITH_TIMEOUT(find(link, QStringLiteral("Follow"))->state == TrackedCommand::NoAckDefined, 3000);
 
-        // Angle: SDK limits checked before sending; the quaternion encodes the requested angles
-        QVERIFY(!link.gimbalAngle(95, 0, 0));
-        QVERIFY(link.gimbalAngle(-30, 0, 10));
+        // Angle: limits checked; steered by rate from the measured attitude (pitch -30°, yaw 10°)
+        QVERIFY(!link.gimbalAngle(95, 0));
+        QSignalSpy done(&link, &PayloadLink::angleFinished);
+        QVERIFY(link.gimbalAngle(-20, 5));
         QVERIFY(waitTx(fake, [](const MavFrame &x) { return x.msgid == MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE; }, &f));
-        float q[4], r, p, y;
+        float q[4];
         mavlink_msg_gimbal_device_set_attitude_get_q(&f.msg, q);
-        mavlink_quaternion_to_euler(q, &r, &p, &y);
-        QVERIFY(std::abs(p * 180 / M_PI - (-30)) < 0.01 && std::abs(y * 180 / M_PI - 10) < 0.01);
+        QVERIFY(std::isnan(q[0]));  // a rate, not an angle
+        QVERIFY(std::abs(mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_y(&f.msg) - float(10 * M_PI / 180)) < 1e-4f);  // up, 10° off
+        QVERIFY(std::abs(mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_z(&f.msg) - float(-5 * M_PI / 180)) < 1e-4f);  // left, 5° off
         // ... and repeats the mode just commanded (Follow), not the reported LOCK, so it cannot undo the mode change
         QCOMPARE(mavlink_msg_gimbal_device_set_attitude_get_flags(&f.msg), quint16(GIMBAL_DEVICE_FLAGS_PITCH_LOCK));
+        fake.send(gimbalStatus(GIMBAL_DEVICE_FLAGS_YAW_LOCK | GIMBAL_DEVICE_FLAGS_PITCH_LOCK, -20.2, 5.3));  // within the tolerance: stop
+        QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 3000);
+        QVERIFY(done.at(0).at(0).toBool());
+        QVERIFY(waitTx(fake, [](const MavFrame &x) {
+            return x.msgid == MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE && mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_y(&x.msg) == 0 &&
+                   mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_z(&x.msg) == 0;
+        }));
+        // Another gimbal command cancels a move in progress
+        QVERIFY(link.gimbalAngle(10, 5));
+        QVERIFY(link.gimbalRate(0, 0, 0));
+        QCOMPARE(done.size(), 2);
+        QVERIFY(!done.at(1).at(0).toBool());
 
         // Rate: rad/s on the wire, as MAVLink defines it (a VIO on 3.1.8.21 turns at the requested speed)
         QVERIFY(link.gimbalRate(0, 0, 10));
-        QVERIFY(waitTx(fake, [](const MavFrame &x) { return x.msgid == MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE; }, &f));
+        QVERIFY(waitTx(fake, [](const MavFrame &x) {
+            return x.msgid == MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE && mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_z(&x.msg) > 0;
+        }, &f));
         QVERIFY(std::abs(mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_z(&f.msg) - float(10 * M_PI / 180)) < 1e-5f);
         QTRY_VERIFY_WITH_TIMEOUT(find(link, QStringLiteral("Gimbal rate pitch 0°/s roll 0°/s yaw 10°/s"))->state == TrackedCommand::NoAckDefined, 3000);
         QTest::qWait(1100);  // the commanded mode is no longer pending: the reported flags are repeated
@@ -440,7 +470,7 @@ private slots:
 
         link.disconnectLink();
         QTRY_STATE(link, LinkState::Disconnected, 3000);
-        QVERIFY(!link.gimbalAngle(0, 0, 0));  // refused once disconnected
+        QVERIFY(!link.gimbalAngle(0, 0));  // refused once disconnected
     }
 };
 

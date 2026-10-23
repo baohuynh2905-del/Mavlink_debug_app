@@ -7,6 +7,7 @@
 
 #include <QThread>
 
+#include <algorithm>
 #include <cmath>
 
 #include <chrono>
@@ -63,6 +64,7 @@ void PayloadLink::connectTo(const QString &ip, int port)
     m_modeFlagsMs = -1;
     m_settingReads.clear();
     m_listMs = -1;
+    m_cameraSeenMs = -1;
     m_autoInfoSent = false;
 
     T_ConnInfo ci{};
@@ -134,6 +136,7 @@ void PayloadLink::poll()
         for (MavFrame &f : parseDatagram(reinterpret_cast<const uint8_t *>(d.bytes.constData()), size_t(d.bytes.size()))) {
             if (d.dir == CapturedFrame::Rx && f.status == MavFrame::Ok) {
                 m_obs.lastValidRx = ms;
+                if (m_cameraSeenMs < 0 && f.compid >= MAV_COMP_ID_CAMERA && f.compid <= MAV_COMP_ID_CAMERA6) m_cameraSeenMs = ms;
                 if (f.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
                     m_obs.lastHeartbeat = ms;
                     m_heartbeats[quint16(f.sysid << 8 | f.compid)] = ms;
@@ -159,13 +162,16 @@ void PayloadLink::poll()
         commands |= m_tracker.onFrame(c);
     }
     commands |= m_tracker.tick(monoNs() / 1000000);
+    steerStep();
     if (!out.empty()) emit framesCaptured(out);
     if (commands) emit commandsChanged();
 
     // Once per connection, as Gremsy's ui_demo does: ask for info and start the parameter streams. The SDK addresses
-    // the camera at compid 101 until it hears the camera (100), so wait for that heartbeat too (at most 5 s).
-    const bool cameraKnown = m_telemetry.latest(MAVLINK_MSG_ID_HEARTBEAT, MAV_COMP_ID_CAMERA) ||
-                             (m_openSinceMs >= 0 && monoNs() / 1000000 - m_openSinceMs > 5000);
+    // the camera at compid 101 until its own message thread has handled a camera frame, which comes after this
+    // observer saw it: wait 300 ms past the first camera frame (at most 5 s when no camera answers).
+    const qint64 nowMsec = monoNs() / 1000000;
+    const bool cameraKnown = (m_cameraSeenMs >= 0 && nowMsec - m_cameraSeenMs >= 300) ||
+                             (m_openSinceMs >= 0 && nowMsec - m_openSinceMs > 5000);
     if (!m_autoInfoSent && isOpen(m_state) && cameraKnown && m_telemetry.latest(MAVLINK_MSG_ID_HEARTBEAT, TelemetryStore::kPayloadCore)) {
         m_autoInfoSent = true;
         requestPayloadInfo(true);
@@ -207,6 +213,7 @@ bool PayloadLink::gimbalMode(GimbalFlags::Change change, const QString &label)
     }
     GimbalAttitude a;
     gimbalAttitude(status->frame, &a);
+    if (m_steer) endSteer(false, QStringLiteral("Cancelled by a mode change"));
     const quint16 flags = GimbalFlags::apply(a.flags, change);
     m_modeFlags = flags;
     m_modeFlagsMs = nowMs();
@@ -243,27 +250,72 @@ bool PayloadLink::setMotionFlags()
     return true;
 }
 
-bool PayloadLink::gimbalAngle(double pitch, double roll, double yaw)
+double PayloadLink::angleDiff(double target, double measured)
+{
+    return std::remainder(target - measured, 360.0);
+}
+
+void PayloadLink::steerRates(double errPitch, double errYaw, double maxDps, double *pitchDps, double *yawDps)
+{
+    auto rate = [maxDps](double err) { return std::abs(err) < kAngleTolerance ? 0.0 : std::clamp(kSteerGain * err, -maxDps, maxDps); };
+    *pitchDps = rate(errPitch);
+    *yawDps = rate(errYaw);
+}
+
+bool PayloadLink::gimbalAngle(double pitch, double yaw, double maxDps)
 {
     if (!ready() || !setMotionFlags()) return false;
-    if (std::abs(pitch) > kPitchLimit || std::abs(roll) > kRollLimit || std::abs(yaw) > kYawLimit) {
-        m_commandError = QStringLiteral("Angle outside SDK limits (pitch ±90°, roll ±180°, yaw ±180°)");
+    if (std::abs(pitch) > kPitchLimit || std::abs(yaw) > kYawLimit || maxDps <= 0) {
+        m_commandError = QStringLiteral("Angle outside the limits (pitch ±90°, yaw ±180°)");
         return false;
     }
-    m_tracker.expect(QStringLiteral("Gimbal angle pitch %1° roll %2° yaw %3°").arg(pitch).arg(roll).arg(yaw),
+    if (m_steer) endSteer(false, QStringLiteral("Replaced by a new angle"));
+    GimbalAttitude a;
+    gimbalAttitude(m_telemetry.latest(MAVLINK_MSG_ID_GIMBAL_DEVICE_ATTITUDE_STATUS)->frame, &a);  // setMotionFlags() checked it
+    const double far = std::max(std::abs(pitch - a.pitchDeg), std::abs(angleDiff(yaw, a.yawDeg)));
+    // Time at full speed, plus the exponential approach (gain 1/s) and the stream's pauses; then it stops
+    m_steer = Steer{pitch, yaw, maxDps, nowMs() + 8000 + qint64(std::min(30000.0, 2000 * far / maxDps))};
+    m_tracker.expect(QStringLiteral("Move to angle pitch %1° yaw %2° (steered by rate, ≤ %3°/s)").arg(pitch).arg(yaw).arg(maxDps),
                      MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE, 0, {}, nowMs(), [](const MavFrame &f) {
                          float q[4];
                          mavlink_msg_gimbal_device_set_attitude_get_q(&f.msg, q);
-                         return !std::isnan(q[0]);
+                         return std::isnan(q[0]);
                      });
-    m_sdk->setGimbalSpeed(float(pitch), float(roll), float(yaw), INPUT_ANGLE);
     emit commandsChanged();
+    steerStep();
     return true;
+}
+
+void PayloadLink::endSteer(bool reached, const QString &detail)
+{
+    m_steer.reset();
+    if (m_sdk && isOpen(m_state) && setMotionFlags()) m_sdk->setGimbalSpeed(0, 0, 0, INPUT_SPEED);
+    if (!reached) m_commandError = detail;
+    emit angleFinished(reached, detail);
+}
+
+void PayloadLink::steerStep()
+{
+    if (!m_steer) return;
+    if (!isOpen(m_state)) return endSteer(false, QStringLiteral("Link closed"));
+    const CapturedFrame *c = m_telemetry.latest(MAVLINK_MSG_ID_GIMBAL_DEVICE_ATTITUDE_STATUS);
+    GimbalAttitude a;
+    if (!c || !gimbalAttitude(c->frame, &a) || monoNs() - c->monoNs > 1500000000LL)
+        return endSteer(false, QStringLiteral("Gimbal attitude older than 1.5 s: stopped"));
+    const double ep = m_steer->pitch - a.pitchDeg, ey = angleDiff(m_steer->yaw, a.yawDeg);
+    double rp, ry;
+    steerRates(ep, ey, m_steer->maxDps, &rp, &ry);
+    if (!rp && !ry) return endSteer(true, QStringLiteral("Reached (pitch %1°, yaw %2° off)").arg(ep, 0, 'f', 1).arg(ey, 0, 'f', 1));
+    if (nowMs() > m_steer->deadlineMs)
+        return endSteer(false, QStringLiteral("Not reached in time (pitch %1°, yaw %2° off): stopped").arg(ep, 0, 'f', 1).arg(ey, 0, 'f', 1));
+    setMotionFlags();
+    m_sdk->setGimbalSpeed(float(rp), 0, float(ry), INPUT_SPEED);
 }
 
 bool PayloadLink::gimbalRate(double pitch, double roll, double yaw, bool track)
 {
     if (!ready() || !setMotionFlags()) return false;
+    if (m_steer) endSteer(false, QStringLiteral("Cancelled by another gimbal command"));
     if (track) {
         const float p = float(pitch * M_PI / 180), y = float(yaw * M_PI / 180);
         m_tracker.expect(QStringLiteral("Gimbal rate pitch %1°/s roll %2°/s yaw %3°/s").arg(pitch).arg(roll).arg(yaw),

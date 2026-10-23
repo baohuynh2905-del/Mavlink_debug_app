@@ -60,7 +60,7 @@ private:
     void stopRate(bool force = false);  // force: send zero even if not moving (Stop button)
 
     const PayloadProfile &m_profile;
-    QDoubleSpinBox *m_pitch, *m_roll, *m_yaw;
+    QDoubleSpinBox *m_pitch, *m_yaw;
     QSlider *m_speed;  // °/s for the hold-to-move pad
     QLabel *m_readout[3];  // pitch, roll, yaw
     QLabel *m_commanded, *m_attitude, *m_rates, *m_mode, *m_flags, *m_failures, *m_delta;
