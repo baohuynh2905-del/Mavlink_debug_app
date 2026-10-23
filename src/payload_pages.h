@@ -10,11 +10,15 @@
 
 class MavlinkDict;
 class PayloadLink;
+struct CameraSetting;
 struct PayloadProfile;
+class QComboBox;
+class QDialog;
 class QDoubleSpinBox;
 class QLabel;
 class QPushButton;
 class QSlider;
+class QSpinBox;
 class QTableWidget;
 class QTimer;
 
@@ -56,7 +60,8 @@ private:
     void stopRate(bool force = false);  // force: send zero even if not moving (Stop button)
 
     const PayloadProfile &m_profile;
-    QDoubleSpinBox *m_pitch, *m_roll, *m_yaw, *m_speed;
+    QDoubleSpinBox *m_pitch, *m_roll, *m_yaw;
+    QSlider *m_speed;  // °/s for the hold-to-move pad
     QLabel *m_readout[3];  // pitch, roll, yaw
     QLabel *m_commanded, *m_attitude, *m_rates, *m_mode, *m_flags, *m_failures, *m_delta;
     std::vector<std::pair<unsigned, QPushButton *>> m_modeButtons;  // GB_MODE value, highlighted when reported
@@ -73,6 +78,7 @@ class CameraPage : public PayloadPage
 public:
     CameraPage(PayloadLink *link, const MavlinkDict *dict, const PayloadProfile &profile, QWidget *parent = nullptr);
 
+    // "Armed" = Select target was pressed: the tracker is active and a click on the video picks the target.
     bool trackArmed() const { return m_trackArmed; }
     void trackAt(QPointF pos);  // 0..1 picture coordinates; only while armed
 
@@ -90,9 +96,33 @@ private:
     const PayloadProfile &m_profile;
     QSlider *m_zoomRange;
     QPushButton *m_recBtn, *m_armBtn = nullptr, *m_centreBtn = nullptr;
+    QDialog *m_settingsDialog = nullptr;
     QLabel *m_zoomReadout, *m_track = nullptr;
     QLabel *m_capture, *m_video, *m_storage, *m_settings, *m_reported;
     bool m_trackArmed = false;
+};
+
+// Every camera setting in the profile, showing what the camera reports (PARAM_EXT_VALUE). Opened as a dialog
+// from the camera panel; reads all settings each time it is shown.
+class CameraSettingsPage : public PayloadPage
+{
+    Q_OBJECT
+public:
+    CameraSettingsPage(PayloadLink *link, const MavlinkDict *dict, const PayloadProfile &profile, QWidget *parent = nullptr);
+
+protected:
+    void refresh() override;
+    void showEvent(QShowEvent *e) override;
+
+private:
+    struct Row {
+        const CameraSetting *setting;
+        QComboBox *combo;  // list settings
+        QSpinBox *spin;    // number settings
+        QPushButton *set;  // enabled once the camera has reported the value, so an unread 0 is never sent
+        QLabel *reported;
+    };
+    std::vector<Row> m_rows;
 };
 
 class TelemetryPage : public PayloadPage

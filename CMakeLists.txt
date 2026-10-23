@@ -51,7 +51,7 @@ target_compile_definitions(appcore PRIVATE
 
 # --- Widgets and the GUI application ---
 add_library(appgui STATIC src/theme.cpp src/main_window.cpp src/inspector_widget.cpp src/stats_widget.cpp src/payload_pages.cpp
-    src/video_player.cpp src/video_page.cpp)
+    src/video_player.cpp src/video_page.cpp src/splash.cpp)
 target_link_libraries(appgui PUBLIC Qt6::Widgets appcore PRIVATE PkgConfig::GSTVIDEO)
 target_compile_options(appgui PRIVATE -Wall -Wextra)
 

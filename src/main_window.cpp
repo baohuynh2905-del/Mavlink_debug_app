@@ -463,6 +463,19 @@ void MainWindow::deleteProfile()
     reloadProfiles();
 }
 
+std::vector<BootCheck> MainWindow::bootChecks() const
+{
+    const PayloadProfile &vio = vioProfile();
+    return {
+        {QStringLiteral("MAVLINK DICTIONARY"),
+         m_dict.isLoaded() ? QStringLiteral("%1 XML FILES").arg(m_dict.files().size()) : QStringLiteral("NOT FOUND"), m_dict.isLoaded()},
+        {QStringLiteral("PAYLOADSDK"), PayloadLink::sdkVersion().section(QLatin1Char('_'), 0, 0)},
+        {QStringLiteral("PAYLOAD PROFILE"), QStringLiteral("%1 · %2 SETTINGS").arg(QLatin1String(vio.name)).arg(vio.cameraSettings.size())},
+        {QStringLiteral("TARGET"), QStringLiteral("%1:%2").arg(m_ip->text().trimmed()).arg(m_port->value()),
+         validateEndpoint(m_ip->text(), m_port->value()).isEmpty()},
+    };
+}
+
 void MainWindow::onConnectClicked()
 {
     if (isOpen(m_link->state())) {
@@ -615,6 +628,6 @@ void MainWindow::refreshOperator()
             box = QRectF(o.trackBox->x() / PayloadLink::kTrackerWidth, o.trackBox->y() / PayloadLink::kTrackerHeight,
                          o.trackBox->width() / PayloadLink::kTrackerWidth, o.trackBox->height() / PayloadLink::kTrackerHeight);
     }
-    if (m_camera->trackArmed()) hud.push_back({br, QStringLiteral("CLICK TO TRACK"), QColor(Theme::Accent)});
+    if (m_camera->trackArmed()) hud.push_back({br, QStringLiteral("CLICK AN OBJECT TO TRACK"), QColor(Theme::Accent)});
     m_video->view()->setHud(std::move(hud), box, boxColor);
 }

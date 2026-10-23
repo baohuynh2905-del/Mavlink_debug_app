@@ -1,8 +1,10 @@
 // Hardware check of the VIO control path (not part of ctest: it moves a real gimbal).
 // Every action goes through PayloadLink exactly as the GUI sends it, and every effect is confirmed
 // from the payload's own telemetry. Small motions only, each undone afterwards; no photo/recording.
+// tracking moves the gimbal to follow a target; settings writes camera settings (only values read back from
+// the camera) and changes three of them, restoring each.
 //
-//   hw_vio_commands --ip 192.168.55.1 [--steps camera,angle,rate,mode-flags,mode-param] [--record run.jsonl]
+//   hw_vio_commands --ip 192.168.55.1 [--steps camera,angle,rate,mode-flags,mode-param,tracking,settings] [--record run.jsonl]
 
 #include "frame_writer.h"
 #include "payload_link.h"
@@ -13,6 +15,7 @@
 #include <QElapsedTimer>
 #include <QThread>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -85,13 +88,14 @@ static bool safe(QString *why)
     return false;
 }
 
-static bool reachPitchYaw(double pitch, double yaw, int ms, double tol = 1.0)
+// Yaw lands ~2.7° off an angle command on a VIO (3.1.4.18), so yaw gets a wider tolerance.
+static bool reachPitchYaw(double pitch, double yaw, int ms, double tol = 1.0, double yawTol = 4.0)
 {
     QElapsedTimer t;
     t.start();
     const bool ok = waitUntil([&] {
         GimbalAttitude a;
-        return attitude(&a) && std::abs(a.pitchDeg - pitch) < tol && std::abs(a.yawDeg - yaw) < tol;
+        return attitude(&a) && std::abs(a.pitchDeg - pitch) < tol && std::abs(a.yawDeg - yaw) < yawTol;
     }, ms);
     GimbalAttitude a;
     attitude(&a);
@@ -205,12 +209,15 @@ int main(int argc, char *argv[])
 
     if (steps.contains(QLatin1String("rate"))) {
     if (!safe(&why)) { log(QStringLiteral("ABORT: ") + why); return 1; }
+    GimbalAttitude a0r;
+    attitude(&a0r);
     double peakRate = 0;  // reported angular_velocity_z, deg/s
-    QObject::connect(&link, &PayloadLink::framesCaptured, [&](const std::vector<CapturedFrame> &f) {
+    const auto peakConn = QObject::connect(&link, &PayloadLink::framesCaptured, [&](const std::vector<CapturedFrame> &f) {
         GimbalAttitude a;
         for (const CapturedFrame &c : f)
             if (c.dir == CapturedFrame::Rx && gimbalAttitude(c.frame, &a) && std::abs(a.rateZ) > std::abs(peakRate)) peakRate = a.rateZ;
     });
+    link.setGimbalRateScale(vioProfile().gimbalRateScale);  // as GimbalPage does
     link.gimbalRate(0, 0, 10, true);
     settle(QStringLiteral("rate yaw +10°/s (then re-sent every 100 ms for 1 s)"));
     for (int i = 0; i < 9; ++i) {
@@ -224,11 +231,13 @@ int main(int argc, char *argv[])
     pause(800);
     GimbalAttitude a1;
     attitude(&a1);
-    check(a1.yawDeg - yaw0 > 3 && a1.yawDeg - yaw0 < 20,
-          QStringLiteral("yaw moved by %1° for ~1 s at 10°/s").arg(a1.yawDeg - yaw0, 0, 'f', 2));
+    const double moved = a1.yawDeg - a0r.yawDeg;
+    check(moved > 7 && moved < 15, QStringLiteral("yaw moved by %1° for ~1 s at 10°/s").arg(moved, 0, 'f', 2));
     link.gimbalAngle(pitch0, 0, yaw0);
     settle(QStringLiteral("angle back to start yaw"));
+    QObject::disconnect(peakConn);  // the lambda refers to peakRate, which ends with this block
     log(QStringLiteral("  peak reported angular_velocity_z: %1°/s").arg(peakRate, 0, 'f', 2));
+    check(std::abs(peakRate) > 8 && std::abs(peakRate) < 12, QStringLiteral("peak rate near the requested 10°/s"));
     check(reachPitchYaw(pitch0, yaw0, 5000), QStringLiteral("back to start yaw"));
     }
 
@@ -271,6 +280,112 @@ int main(int argc, char *argv[])
           QStringLiteral("YAW_LOCK set again in telemetry"));
     check(waitUntil([&] { return param("GB_MODE").value_or(-1) == modeValue("LOCK"); }, 3000),
           QStringLiteral("GB_MODE parameter reports LOCK"));
+    }
+
+    if (steps.contains(QLatin1String("tracking"))) {
+    if (!safe(&why)) { log(QStringLiteral("ABORT: ") + why); return 1; }
+    log(QStringLiteral("TRACKING"));
+    const PayloadProfile &vio = vioProfile();
+    auto trk = [&] { return link.operatorStatus(); };
+    link.cameraParam(QStringLiteral("Tracking mode: object"), vio.trackingModeId, vio.trackingObjectMode);
+    check(settle(QStringLiteral("PARAM_EXT_SET TRACK_MODE = object"))->state == TrackedCommand::Accepted, QStringLiteral("TRACK_MODE acknowledged"));
+    link.trackingStreams();
+    link.trackingMode(PayloadLink::TrackActive);
+    check(settle(QStringLiteral("tracker ACTIVE"))->state == TrackedCommand::Accepted, QStringLiteral("ACTIVE acknowledged"));
+
+    // Centre pick: the gimbal barely moves, so the reported box shows the coordinate convention
+    link.trackingTarget(960, 540);
+    settle(QStringLiteral("target 960,540 (after rate 0 and ACTIVE)"));
+    check(waitUntil([&] { return trk().trackStatus.value_or(-1) == PayloadLink::TrackTracked; }, 2500), QStringLiteral("TRACKED"));
+    waitUntil([&] { return trk().trackBox.has_value(); }, 1000);
+    const QRectF b = trk().trackBox.value_or(QRectF());
+    log(QStringLiteral("  box x %1 y %2 w %3 h %4").arg(b.x()).arg(b.y()).arg(b.width()).arg(b.height()));
+    check(std::abs(b.center().x() - 960) < 30 && std::abs(b.center().y() - 540) < 30, QStringLiteral("box centred on the pick (TRK_POS = top-left)"));
+    link.trackingMode(PayloadLink::TrackStop);
+    settle(QStringLiteral("tracker STOP"));
+    check(waitUntil([&] { return trk().trackMode.value_or(-1) == PayloadLink::TrackStop; }, 2000), QStringLiteral("mode STOP reported"));
+
+    // Off-centre pick after an angle command (the case that never followed): the gimbal must turn to it
+    link.gimbalAngle(pitch0, 0, yaw0);
+    settle(QStringLiteral("angle hold at the start attitude"));
+    pause(1500);
+    GimbalAttitude s0;
+    attitude(&s0);
+    link.trackingTarget(480, 270);
+    settle(QStringLiteral("target 480,270"));
+    // The box must first show the new target near the pick (not the previous, centred box), then reach the centre
+    double turned = 0, bestDist = 1e9;
+    bool seenAtPick = false;
+    waitUntil([&] {
+        GimbalAttitude a;
+        if (attitude(&a)) turned = std::max(turned, std::hypot(a.pitchDeg - s0.pitchDeg, a.yawDeg - s0.yawDeg));
+        if (const auto bx = trk().trackBox; bx && trk().trackStatus.value_or(0) == PayloadLink::TrackTracked) {
+            seenAtPick |= std::hypot(bx->center().x() - 480, bx->center().y() - 270) < 200;
+            if (seenAtPick) bestDist = std::min(bestDist, std::hypot(bx->center().x() - 960, bx->center().y() - 540));
+        }
+        return turned > 10 && bestDist < 60;
+    }, 5000);
+    check(seenAtPick, QStringLiteral("box reported at the picked target"));
+    log(QStringLiteral("  status %1").arg(trackingStateText(trk().trackMode.value_or(-1), trk().trackStatus.value_or(-1))));
+    check(turned > 3, QStringLiteral("gimbal followed the target: turned %1°").arg(turned, 0, 'f', 1));
+    check(bestDist < 60, QStringLiteral("target brought to the picture centre: %1 px away").arg(bestDist, 0, 'f', 0));
+    link.trackingMode(PayloadLink::TrackStop);
+    settle(QStringLiteral("tracker STOP"));
+    check(waitUntil([&] { return trk().trackMode.value_or(-1) == PayloadLink::TrackStop; }, 2000), QStringLiteral("mode STOP reported"));
+    link.gimbalAngle(pitch0, 0, yaw0);
+    settle(QStringLiteral("angle back to start"));
+    check(reachPitchYaw(pitch0, yaw0, 5000), QStringLiteral("back to start"));
+    }
+
+    if (steps.contains(QLatin1String("settings-read"))) {  // read-only
+    link.requestCameraSettings();
+    pause(3000);
+    const auto &cam = link.telemetry().cameraParams();
+    QStringList all;
+    for (auto it = cam.cbegin(); it != cam.cend(); ++it) all << QStringLiteral("%1=%2").arg(it.key()).arg(it->value);
+    log(QStringLiteral("  %1 settings: %2").arg(cam.size()).arg(all.join(QLatin1Char(' '))));
+    }
+
+    // Settings: only values the camera reported are written back; three visible ones are changed and restored
+    if (steps.contains(QLatin1String("settings"))) {
+    log(QStringLiteral("SETTINGS"));
+    const auto &cam = link.telemetry().cameraParams();
+    link.requestCameraSettings();
+    pause(3000);
+    log(QStringLiteral("  camera listed %1 settings").arg(cam.size()));
+    auto reported = [&](const char *id) -> std::optional<unsigned> {
+        const auto it = cam.constFind(QString::fromLatin1(id));
+        return it == cam.cend() ? std::nullopt : std::optional<unsigned>(unsigned(it->value));
+    };
+    for (const CameraSetting &cs : vioProfile().cameraSettings) {
+        const auto v = reported(cs.id);
+        bool known = v.has_value();
+        if (known && !cs.options.empty())
+            known = std::any_of(cs.options.begin(), cs.options.end(), [&](const ParamOption &o) { return o.value == *v; });
+        else if (known)
+            known = *v >= cs.min && *v <= cs.max;
+        if (!known) {
+            check(false, QStringLiteral("%1: reported %2, not a value the profile knows: not written").arg(QLatin1String(cs.id))
+                             .arg(v ? QString::number(*v) : QStringLiteral("nothing")));
+            continue;
+        }
+        link.cameraParam(QStringLiteral("Same value"), cs.id, *v);
+        const TrackedCommand *t = settle(QStringLiteral("%1 = %2 (unchanged)").arg(QLatin1String(cs.id)).arg(*v));
+        check(t && t->state == TrackedCommand::Accepted, QStringLiteral("%1 accepted").arg(QLatin1String(cs.id)));
+    }
+    for (const char *id : {"OSD_MODE", "C_T_PALETTE", "C_V_DEFOG"}) {
+        const CameraSetting *cs = nullptr;
+        for (const CameraSetting &c : vioProfile().cameraSettings) if (QLatin1String(c.id) == QLatin1String(id)) cs = &c;
+        const auto v0 = reported(id);
+        if (!cs || !v0) { check(false, QStringLiteral("%1 not read: not changed").arg(QLatin1String(id))); continue; }
+        const unsigned v1 = cs->options.front().value == *v0 ? cs->options.back().value : cs->options.front().value;
+        for (unsigned v : {v1, *v0}) {
+            link.cameraParam(QStringLiteral("Change"), id, v);
+            settle(QStringLiteral("%1 = %2").arg(QLatin1String(id)).arg(v));
+            check(waitUntil([&] { return reported(id) == v; }, 3000), QStringLiteral("%1 reads back %2").arg(QLatin1String(id)).arg(v));
+            pause(800);
+        }
+    }
     }
 
     GimbalAttitude a2;

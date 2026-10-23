@@ -38,13 +38,15 @@ public:
     static constexpr quint8 kPayloadCore = MAV_COMP_ID_USER2;  // source of the SDK's DEBUG parameter stream
 
     void add(const CapturedFrame &c);
-    void clear() { m_last.clear(); m_params.clear(); }
+    void clear() { m_last.clear(); m_params.clear(); m_cameraParams.clear(); }
 
     const CapturedFrame *latest(quint32 msgid) const;                // newest from any component
     const CapturedFrame *latest(quint32 msgid, quint8 compid) const;
     const QMap<int, Value> &payloadParams() const { return m_params; }  // DEBUG.ind -> value
+    const QMap<QString, Value> &cameraParams() const { return m_cameraParams; }  // PARAM_EXT_VALUE param_id -> uint32
 
 private:
     std::map<std::pair<quint32, quint8>, CapturedFrame> m_last;
     QMap<int, Value> m_params;
+    QMap<QString, Value> m_cameraParams;
 };

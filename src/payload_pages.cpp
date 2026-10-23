@@ -6,7 +6,9 @@
 #include "payload_profile.h"
 #include "ui_util.h"
 
+#include <QAbstractItemView>
 #include <QComboBox>
+#include <QDialog>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QGridLayout>
@@ -15,6 +17,8 @@
 #include <QHeaderView>
 #include <QMessageBox>
 #include <QSlider>
+#include <QSpinBox>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -72,6 +76,8 @@ static QGroupBox *group(const QString &title, QLayout *layout)
 GimbalPage::GimbalPage(PayloadLink *link, const MavlinkDict *dict, const PayloadProfile &profile, QWidget *parent)
     : PayloadPage(link, dict, parent), m_profile(profile)
 {
+    link->setGimbalRateScale(profile.gimbalRateScale);
+
     // Mode: PARAM_EXT_SET GB_MODE (Mavlink_Command_List "Set gimbal mode"). The SDK's newer route
     // (flags in GIMBAL_DEVICE_SET_ATTITUDE) had no effect on a VIO running software 3.1.4.18.
     auto *modes = new QGridLayout;
@@ -97,12 +103,27 @@ GimbalPage::GimbalPage(PayloadLink *link, const MavlinkDict *dict, const Payload
     if (!m_profile.gimbalModeId) modes->addWidget(new QLabel(QStringLiteral("Gimbal modes not supported by this profile")), 0, 0);
 
     // Rate: hold to move, re-sent every 100 ms like Gremsy's ui_demo, zero on release
-    m_speed = new QDoubleSpinBox;
+    m_speed = new QSlider(Qt::Horizontal);
     m_speed->setRange(1, 90);
     m_speed->setValue(20);
-    m_speed->setSuffix(QStringLiteral(" °/s"));
-    m_speed->setToolTip(QStringLiteral("The SDK documents no rate limit. On a VIO (software 3.1.4.18, default RC settings) "
-                                       "10°/s produced a measured ~1.7°/s: compare with the measured angular rate."));
+    m_speed->setPageStep(5);
+    m_speed->setToolTip(QStringLiteral("Speed of the arrow pad, also while a button is held. A VIO (software 3.1.4.18) turns at "
+                                       "the commanded rate × π/18, so the %1 profile sends it × %2 to get the speed shown here. "
+                                       "Compare with the measured rate in the telemetry below.")
+                            .arg(QLatin1String(profile.name)).arg(profile.gimbalRateScale, 0, 'f', 3));
+    auto *speedValue = new QLabel;
+    speedValue->setObjectName(QStringLiteral("readout"));
+    speedValue->setFont(monoFont(11));
+    speedValue->setMinimumWidth(speedValue->fontMetrics().horizontalAdvance(QStringLiteral("90 °/s ")));
+    speedValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    auto showSpeed = [this, speedValue](int v) {
+        speedValue->setText(QStringLiteral("%1 °/s").arg(v));
+        // A held arrow keeps its direction and takes the new speed with the next 100 ms repeat
+        if (m_ratePitch) m_ratePitch = std::copysign(v, m_ratePitch);
+        if (m_rateYaw) m_rateYaw = std::copysign(v, m_rateYaw);
+    };
+    connect(m_speed, &QSlider::valueChanged, this, showSpeed);
+    showSpeed(m_speed->value());
     m_rateTimer = new QTimer(this);
     m_rateTimer->setInterval(100);
     connect(m_rateTimer, &QTimer::timeout, this, [this] {
@@ -128,6 +149,7 @@ GimbalPage::GimbalPage(PayloadLink *link, const MavlinkDict *dict, const Payload
     auto *speedRow = new QHBoxLayout;
     speedRow->addWidget(new QLabel(QStringLiteral("Speed")));
     speedRow->addWidget(m_speed, 1);
+    speedRow->addWidget(speedValue);
     auto *rate = new QVBoxLayout;
     rate->addLayout(padRow);
     rate->addLayout(speedRow);
@@ -345,13 +367,14 @@ CameraPage::CameraPage(PayloadLink *link, const MavlinkDict *dict, const Payload
     if (!m_profile.trackingModeId) {
         tracking->addWidget(new QLabel(QStringLiteral("Tracking not supported by %1").arg(QLatin1String(m_profile.name))), 0, 0);
     } else {
-        m_armBtn = button(QStringLiteral("Arm"), QStringLiteral("Selects object tracking (PARAM_EXT_SET %1), starts the TRK_* parameter "
-                                                                "streams and activates the tracker (MAV_CMD_USER_4). Then click the "
-                                                                "video to pick a target; the gimbal follows it.")
-                                                     .arg(QLatin1String(m_profile.trackingModeId)), "primary");
+        m_armBtn = button(QStringLiteral("Select target"),
+                          QStringLiteral("Turns object tracking on (PARAM_EXT_SET %1, the TRK_* parameter streams, MAV_CMD_USER_4 "
+                                         "ACTIVE). Then click an object on the video: the gimbal turns to follow it.")
+                              .arg(QLatin1String(m_profile.trackingModeId)), "primary");
         m_centreBtn = button(QStringLiteral("Track centre"), QStringLiteral("Track the object in the centre of the picture"));
         m_centreBtn->setEnabled(false);
-        QPushButton *release = button(QStringLiteral("Release"), QStringLiteral("Stops tracking (MAV_CMD_USER_4, mode 0)"));
+        QPushButton *release = button(QStringLiteral("Stop tracking"), QStringLiteral("Stops tracking (MAV_CMD_USER_4, mode STOP). "
+                                                                                      "The gimbal stays where it is."));
         connect(m_armBtn, &QPushButton::clicked, this, [this] {
             const bool ok = m_link->cameraParam(QStringLiteral("Tracking mode: object"), m_profile.trackingModeId, m_profile.trackingObjectMode) &&
                             m_link->trackingStreams() && m_link->trackingMode(PayloadLink::TrackActive);
@@ -394,6 +417,24 @@ CameraPage::CameraPage(PayloadLink *link, const MavlinkDict *dict, const Payload
     addParam(QStringLiteral("View source"), m_profile.viewSourceId, m_profile.viewSources);
     addParam(QStringLiteral("Record source"), m_profile.recordSourceId, m_profile.recordSources);
     addParam(QStringLiteral("IR palette"), m_profile.irPaletteId, m_profile.irPalettes);
+    QPushButton *all = button(QStringLiteral("⚙  All camera settings…"),
+                              QStringLiteral("Exposure, image, focus and zoom, thermal, OSD and rangefinder, with the values the "
+                                             "camera reports"));
+    all->setEnabled(!m_profile.cameraSettings.empty());
+    connect(all, &QPushButton::clicked, this, [this] {
+        if (!m_settingsDialog) {
+            m_settingsDialog = new QDialog(this);
+            m_settingsDialog->setWindowTitle(QStringLiteral("Camera settings · %1").arg(QLatin1String(m_profile.name)));
+            auto *l = new QVBoxLayout(m_settingsDialog);
+            l->setContentsMargins(0, 0, 0, 0);
+            l->addWidget(new CameraSettingsPage(m_link, m_dict, m_profile));
+            m_settingsDialog->resize(720, 520);
+        }
+        m_settingsDialog->show();
+        m_settingsDialog->raise();
+        m_settingsDialog->activateWindow();
+    });
+    settings->insertRow(0, all);
 
     auto *controls = new QWidget;
     auto *cl = new QVBoxLayout(controls);
@@ -525,12 +566,120 @@ void CameraPage::refresh()
         QString t = o.trackStatus ? colored(trackingStateText(*o.trackMode, *o.trackStatus).toHtmlEscaped(),
                                             *o.trackStatus == PayloadLink::TrackTracked ? Theme::Ok
                                             : *o.trackStatus == PayloadLink::TrackLost ? Theme::Bad : Theme::Text)
-                                  : colored(QStringLiteral("no TRK_STATUS received (the streams start on Arm)"), Theme::Dim);
+                                  : colored(QStringLiteral("no TRK_STATUS received (the streams start on Select target)"), Theme::Dim);
         if (o.trackBox)
             t += colored(QStringLiteral(" · target %1, %2 (%3×%4)").arg(o.trackBox->center().x(), 0, 'f', 0).arg(o.trackBox->center().y(), 0, 'f', 0)
                              .arg(o.trackBox->width(), 0, 'f', 0).arg(o.trackBox->height(), 0, 'f', 0), Theme::Dim);
-        if (m_trackArmed) t += QStringLiteral("<br>") + colored(QStringLiteral("ARMED: click the video to pick a target"), Theme::Accent);
+        if (m_trackArmed) t += QStringLiteral("<br>") + colored(QStringLiteral("Click an object on the video to track it"), Theme::Accent);
         m_track->setText(t);
+    }
+}
+
+// --- Camera settings -------------------------------------------------------------------------
+
+CameraSettingsPage::CameraSettingsPage(PayloadLink *link, const MavlinkDict *dict, const PayloadProfile &profile, QWidget *parent)
+    : PayloadPage(link, dict, parent)
+{
+    QPushButton *read = button(QStringLiteral("Read from camera"), QStringLiteral("PARAM_EXT_REQUEST_LIST: the camera answers with every setting"));
+    connect(read, &QPushButton::clicked, this, [this] { report(m_link->requestCameraSettings()); });
+    auto *top = new QHBoxLayout;
+    auto *hint = new QLabel(QStringLiteral("Each control shows what the camera reports. A change is sent at once (PARAM_EXT_SET) "
+                                           "and read back; its ACK is in Analyze › Commands."));
+    hint->setWordWrap(true);
+    top->addWidget(hint, 1);
+    top->addWidget(read);
+
+    auto *tabs = new QTabWidget;
+    QMap<QString, QGridLayout *> grids;
+    for (const CameraSetting &cs : profile.cameraSettings) {
+        const QString group = QString::fromLatin1(cs.group);
+        QGridLayout *g = grids.value(group);
+        if (!g) {
+            auto *w = new QWidget;
+            auto *outer = new QVBoxLayout(w);
+            g = new QGridLayout;
+            g->setColumnStretch(1, 1);
+            g->setColumnMinimumWidth(2, 170);
+            outer->addLayout(g);
+            outer->addStretch();
+            tabs->addTab(w, group);
+            grids.insert(group, g);
+        }
+        Row row{&cs, nullptr, nullptr, nullptr, valueLabel()};
+        const QString label = QString::fromLatin1(cs.label), id = QString::fromLatin1(cs.id);
+        QWidget *control;
+        if (!cs.options.empty()) {
+            row.combo = new QComboBox;
+            for (const ParamOption &o : cs.options) row.combo->addItem(QString::fromLatin1(o.label), o.value);
+            row.combo->setCurrentIndex(-1);
+            row.combo->setPlaceholderText(QStringLiteral("not read yet"));
+            connect(row.combo, &QComboBox::activated, this, [this, combo = row.combo, label, id = cs.id](int i) {
+                report(m_link->cameraParam(label, id, combo->itemData(i).toUInt()));
+            });
+            control = row.combo;
+        } else {
+            row.spin = new QSpinBox;
+            row.spin->setRange(int(cs.min), int(cs.max));
+            QPushButton *set = row.set = button(QStringLiteral("Set"), QStringLiteral("PARAM_EXT_SET %1").arg(id));
+            set->setEnabled(false);
+            connect(set, &QPushButton::clicked, this, [this, spin = row.spin, label, id = cs.id] {
+                report(m_link->cameraParam(label, id, quint32(spin->value())));
+            });
+            control = new QWidget;
+            auto *h = new QHBoxLayout(control);
+            h->setContentsMargins(0, 0, 0, 0);
+            h->addWidget(row.spin, 1);
+            h->addWidget(set);
+        }
+        control->setToolTip(QStringLiteral("PARAM_EXT_SET %1").arg(id));
+        const int r = g->rowCount();
+        g->addWidget(new QLabel(label), r, 0);
+        g->addWidget(control, r, 1);
+        g->addWidget(row.reported, r, 2);
+        m_rows.push_back(row);
+    }
+
+    auto *controls = new QWidget;
+    auto *cl = new QVBoxLayout(controls);
+    cl->setContentsMargins(0, 0, 0, 0);
+    cl->addLayout(top);
+    cl->addWidget(tabs);
+    auto *note = new QLabel(QStringLiteral("IDs and values come from the SDK's %1 header. Settings persist on the camera.")
+                                .arg(QString::fromLatin1(profile.name).toLower() + QStringLiteral("_sdk.h")));
+    note->setWordWrap(true);
+    setPage(controls, note);
+}
+
+void CameraSettingsPage::showEvent(QShowEvent *e)
+{
+    PayloadPage::showEvent(e);
+    if (isOpen(m_link->state())) report(m_link->requestCameraSettings());
+}
+
+void CameraSettingsPage::refresh()
+{
+    if (!isVisible()) return;
+    const auto &params = m_link->telemetry().cameraParams();
+    const qint64 n = now();
+    const int once = std::numeric_limits<int>::max();  // read on request: show the age, never "stale"
+    for (const Row &r : m_rows) {
+        const auto it = params.constFind(QString::fromLatin1(r.setting->id));
+        if (r.set) r.set->setEnabled(it != params.cend());
+        if (it == params.cend()) {
+            r.reported->setText(agedValue({}, -1, n, once));
+            continue;
+        }
+        const unsigned v = unsigned(it->value);
+        QString text = QString::number(v);
+        if (r.combo) {
+            const int i = r.combo->findData(v);
+            if (i >= 0) text = r.combo->itemText(i);
+            else r.combo->setPlaceholderText(QStringLiteral("camera reports %1 (not in the SDK header)").arg(v));
+            if (!r.combo->view()->isVisible() && r.combo->currentIndex() != i) r.combo->setCurrentIndex(i);  // never while open
+        } else if (!r.spin->hasFocus() && r.spin->value() != int(v)) {
+            r.spin->setValue(int(v));
+        }
+        r.reported->setText(agedValue(text, it->monoNs, n, once));
     }
 }
 

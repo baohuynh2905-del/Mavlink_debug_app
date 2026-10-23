@@ -263,23 +263,36 @@ Notes:
   - Bit `0x4000` of the reported flags is Gremsy's "mapping" bit; it is not defined in the MAVLink
     XML.
 - **Hold-to-move rates and continuous zoom/focus:** rates are re-sent every 100 ms while a button is
-  held, like Gremsy's `ui_demo`, and a zero rate is sent on release. Zoom and focus send a
+  held, like Gremsy's `ui_demo`, and a zero rate is sent on release. The **Speed** slider (1–90°/s) also
+  changes a held move. A VIO (3.1.4.18) turns at the commanded rate × π/18, so the VIO profile sends it
+  × 18/π (`gimbalRateScale`); the Commands tab shows both values. Zoom and focus send a
   start command on press and a stop on release. Rate repeats stop if the link closes.
 - **Focus direction:** the buttons use MAVLink semantics (−1 = near, +1 = far). The SDK's
   `Camera_Focus_Value` enum names these the other way round.
-- **Object tracking** (as in the SDK's `payload_do_object_tracking` example; **not yet tested on a VIO**):
-  - **Arm** sends three commands:
+- **Object tracking** (as in the SDK's `payload_do_object_tracking` example; verified on a VIO):
+  - **Select target** sends three commands:
     1. `PARAM_EXT_SET TRACK_MODE` = object tracking (from `vio_sdk.h`).
     2. Starts the `TRK_*` DEBUG streams at 100 ms.
     3. `MAV_CMD_USER_4` (param1 4, param3 0) with mode ACTIVE.
-  - **While armed:** clicking the video, or **Track centre**, sends the target position (param3 1, a
-    128×128 box). **Release** sends mode STOP.
-  - **Safety:** a target is never sent unless the tracker is armed. The SDK notes that a position sent to an
+  - **Then:** clicking an object on the video, or **Track centre**, sends a gimbal rate of 0, ACTIVE again,
+    and the target position (param3 1, a 128×128 box). **Stop tracking** sends mode STOP.
+  - **Why the rate 0:** a VIO keeps holding the last `GIMBAL_DEVICE_SET_ATTITUDE` angle (for example after
+    **Move to angle**) and then tracks without moving the gimbal. A rate-0 command first, as Gremsy's
+    `demo_project` sends, hands the gimbal to the tracker.
+  - **Safety:** a target is never sent unless tracking is on. The SDK notes that a position sent to an
     inactive tracker still moves the gimbal ("EagleEyes").
   - **Status:** `TRK_STATUS` is decoded as `(mode << 8) | status` (IDLE / TRACKED / LOST). The target box comes
-    from `TRK_POS_X/Y/W/H`.
-  - **Assumption:** both the target and the box use a 1920×1080 tracker pixel space, taken from the SDK's
-    defaults and example rather than a specification. Check it on hardware.
+    from `TRK_POS_X/Y/W/H`, where X/Y is the box's **top-left** corner.
+  - **Pixel space:** 1920×1080 for the target and the box, confirmed against the box the camera's own OSD
+    draws in the 1280×720 stream.
+- **Camera settings dialog** (**⚙ All camera settings…** in the camera column): exposure, image, focus and
+  zoom, thermal, video/OSD/rangefinder, 30 settings from `vio_sdk.h`. Opening it reads every setting
+  (`PARAM_EXT_REQUEST_LIST`); the controls show what the camera reports. A change is sent at once and read
+  back (`PARAM_EXT_REQUEST_READ`), because the VIO's `PARAM_EXT_ACK` carries no value. A number is only
+  sent with **Set** once the camera has reported it. Gain and bright use the IDs the camera lists
+  (`C_V_GAIN`, `C_V_BrP`): it rejects the header's `_HS` / `_LS` names.
+- **Boot splash:** about 2.6 s on start-up with the startup checks (dictionary, PayloadSDK version, profile,
+  target); a click or any key skips it.
 - **Settings drop-downs:** a value is sent only when you pick it; refreshing the page never sends
   anything. The values the payload reports are shown separately on the status side.
 - **Controls when disconnected:** all controls are disabled while the link is not open. Nothing is
@@ -326,20 +339,27 @@ Results from a VIO over USB-C (RNDIS, laptop at `192.168.55.100`, 2026-10-22):
     COMMAND_ACK. The tracker reports this as "Answered (message, no ACK)".
 - **Sequence numbers:** the payload core and the camera sometimes send seq N+1 before N (two sender
   threads share one counter). No frame is missing; the statistics count this as *reordered*.
-- **Commands** (`build/hw_vio_commands --ip 192.168.55.1`; small motions, each undone; no photo or
+- **Commands** (`build/hw_vio_commands --ip 192.168.55.1 --steps camera,angle,rate,mode-param,tracking,settings`;
+  59 checks, all passed on 2026-10-23; small motions, each undone; no photo or
   recording):
   - **Camera:** `PARAM_EXT_SET C_SOURCE`, continuous zoom, and auto focus are all acknowledged by
     1/100 within 1–4 ms. `EO_ZOOM` went 1 → 2.16 → 1.
   - **Gimbal angle:** pitch −10° and back were reached in 100–300 ms. `GIMBAL_DEVICE_SET_ATTITUDE`
     has no ACK, so telemetry is the confirmation.
-  - **Gimbal rate:** a yaw rate of 10°/s re-sent for 1 s gave a reported peak of only ~1.7°/s and
-    ~1.9° of motion. The commands arrive and the gimbal reacts, but at about a sixth of the request.
-    The SDK's `gimbal_move_speed` example switches `RC_MODE` to Standard first; that persistent
-    setting was not changed in this check.
+  - **Gimbal rate:** the VIO turns at the commanded rate × π/18 on yaw and pitch (10°/s → 1.7°/s,
+    30°/s → 5.2°/s, steady over 3 s), with `RC_MODE` already Standard. Sent × 18/π, 10°/s and 30°/s
+    gave 9.8–9.97°/s and 29.4°/s (2026-10-23, native Ubuntu).
+  - **Yaw angle:** an angle command lands about 2.7° off the requested yaw (pitch is exact); the checks
+    allow 4° on yaw.
+  - **Tracking** (2026-10-23): a centre pick is TRACKED within 0.1 s with the box at 896,476 (128×128). An
+    off-centre pick (480,270) after an angle command turned the gimbal 20.7° and brought the target
+    within 55 px of the centre in about 3.5 s. Without the rate-0 command the gimbal did not move.
+  - **Camera settings:** all 30 dialog settings were written with their current values and acknowledged;
+    `OSD_MODE`, `C_T_PALETTE` and `C_V_DEFOG` were changed, read back, and restored.
   - **Modes:** `GB_MODE` = FOLLOW, then LOCK, was acknowledged in 1–2 ms. The flags changed
     `0x3C` → `0x2C` → `0x3C` within ~100 ms, and the `GB_MODE` parameter followed. The flag route
     (`YAW_LOCK` cleared in `GIMBAL_DEVICE_SET_ATTITUDE`) did not change the mode.
-  - **Not exercised:** OFF, RESET, MAPPING, photo, recording, and object tracking.
+  - **Not exercised:** OFF, RESET, MAPPING, photo, and recording.
 - **GUI:** `HW_IP=192.168.55.1 SCREENSHOT_DIR=/tmp/shots QT_QPA_PLATFORM=offscreen
   build/test_main_window hardwareScreenshots` connects read-only. It saves screenshots of the Operate view
   (monitor expanded, monitor collapsed, and settings drawer open) and of each Analyze tab.
@@ -455,9 +475,9 @@ loopback fake payload and checks that `sdkQuit()` returns in under 2 s (measured
 
 ## Known limitations
 
-- **Partly tested on hardware:** gimbal OFF, RESET and MAPPING, photo capture, recording, and object
-  tracking have not been run on a VIO. The tracker's pixel space (1920×1080) is an assumption. The gimbal rate is executed far slower than commanded under the payload's
-  current RC settings.
+- **Partly tested on hardware:** gimbal OFF, RESET and MAPPING, photo capture, and recording have not
+  been run on a VIO. The gimbal rate scale (× 18/π) was measured on software 3.1.4.18: re-measure it
+  (`hw_vio_commands --steps rate`) after a payload update, or the gimbal turns faster than the slider says.
 - **VIO only:** other models need their own `payload_profile_<model>.cpp`. Zoom to an absolute level
   (`setCameraZoomTarget`, a custom `MAV_CMD_USER_4`) is not exposed because its range is not
   documented per model.

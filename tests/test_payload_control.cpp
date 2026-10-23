@@ -160,6 +160,10 @@ private slots:
         t.expect(QStringLiteral("view"), MAVLINK_MSG_ID_PARAM_EXT_SET, 0, QStringLiteral("C_SOURCE"), 0);
         t.onFrame(frameOf(paramExt(false, "C_SOURCE", 193), CapturedFrame::Tx, 10));
         QCOMPARE(t.commands().back().state, TrackedCommand::Sent);
+        mavlink_message_t hb;  // the target's HEARTBEAT (msgid 0) is not an answer: 0 means "no response message"
+        mavlink_msg_heartbeat_pack_chan(1, 101, MAVLINK_COMM_0, &hb, MAV_TYPE_CAMERA, MAV_AUTOPILOT_INVALID, 0, 0, 0);
+        QVERIFY(!t.onFrame(frameOf(hb, CapturedFrame::Rx, 15)));
+        QCOMPARE(t.commands().back().state, TrackedCommand::Sent);
         QVERIFY(!t.onFrame(frameOf(paramExt(true, "C_V_REC", 101), CapturedFrame::Rx, 20)));  // other parameter
         QVERIFY(t.onFrame(frameOf(paramExt(true, "C_SOURCE", 101, PARAM_ACK_VALUE_UNSUPPORTED), CapturedFrame::Rx, 30)));
         QCOMPARE(t.commands().back().state, TrackedCommand::Rejected);
@@ -216,6 +220,21 @@ private slots:
         QCOMPARE(s.payloadParams().size(), 1);
         QCOMPARE(s.payloadParams().value(2).value, 123.5);
         QCOMPARE(PayloadLink::payloadParamName(2), QStringLiteral("LRF_RANGE"));
+
+        // PARAM_EXT_VALUE: uint32 in the first bytes of param_value, keyed by param_id
+        char id[16] = {0}, value[128] = {0};
+        strncpy(id, "C_V_FV", sizeof id);
+        const quint32 fv = 40000;  // needs more than one byte
+        memcpy(value, &fv, sizeof fv);
+        mavlink_msg_param_ext_value_pack_chan(1, MAV_COMP_ID_CAMERA, MAVLINK_COMM_0, &m, id, value, MAV_PARAM_EXT_TYPE_UINT32, 44, 20);
+        s.add(frameOf(m, CapturedFrame::Rx, 5));
+        strncpy(id, "C_V_GAIN_HS_LONG", sizeof id);  // 16 chars, no terminator
+        s.add(frameOf(m, CapturedFrame::Tx, 6));     // TX is never telemetry
+        QCOMPARE(s.cameraParams().size(), 1);
+        QCOMPARE(s.cameraParams().value(QStringLiteral("C_V_FV")).value, 40000.0);
+        mavlink_msg_param_ext_value_pack_chan(1, MAV_COMP_ID_CAMERA, MAVLINK_COMM_0, &m, id, value, MAV_PARAM_EXT_TYPE_UINT32, 44, 21);
+        s.add(frameOf(m, CapturedFrame::Rx, 7));
+        QVERIFY(s.cameraParams().contains(QStringLiteral("C_V_GAIN_HS_LONG")));
     }
 
     void vioProfileComesFromSdkHeader()
@@ -232,6 +251,20 @@ private slots:
         QCOMPARE(QString::fromLatin1(p.gimbalModes.at(2).label), QStringLiteral("FOLLOW"));
         QCOMPARE(QString::fromLatin1(p.trackingModeId), QStringLiteral("TRACK_MODE"));
         QCOMPARE(p.trackingObjectMode, 0u);
+
+        // Settings dialog: every row is a list or a range, IDs fit PARAM_EXT's 16 chars and appear once
+        QSet<QString> ids;
+        for (const CameraSetting &c : p.cameraSettings) {
+            const QString id = QString::fromLatin1(c.id);
+            QVERIFY2(!id.isEmpty() && id.size() <= 16 && !ids.contains(id), c.id);
+            ids.insert(id);
+            QVERIFY2(!c.options.empty() || c.max > c.min, c.id);
+            for (const ParamOption &o : c.options) QVERIFY2(o.label && *o.label, c.id);
+        }
+        QVERIFY(ids.contains(QStringLiteral("C_V_SP")) && ids.contains(QStringLiteral("C_V_GAIN")));  // C_V_GAIN: as the camera lists it
+        QVERIFY(!ids.contains(QStringLiteral("RC_MODE")));  // persistent gimbal control setting: not in the camera menu
+        QCOMPARE(p.cameraSettings.front().options.front().value, 0u);  // exposure Auto
+        QVERIFY(std::abs(p.gimbalRateScale - 18 / M_PI) < 1e-9);  // measured on a VIO (3.1.4.18)
     }
 
     void operatorStatusUsesFreshValuesOnly()
@@ -247,7 +280,7 @@ private slots:
         };
         debug(0, 2.5f, 1000);                         // EO_ZOOM
         debug(7, float(1 << 8 | 1), 1000);            // TRK_STATUS: mode ACTIVE, status TRACKED
-        for (int ind : {3, 4}) debug(ind, 900, 1000);  // TRK_POS_X / _Y (centre)
+        for (int ind : {3, 4}) debug(ind, 900, 1000);  // TRK_POS_X / _Y (top-left corner)
         for (int ind : {5, 6}) debug(ind, 100, 1000);  // TRK_POS_W / _H
         mavlink_msg_camera_capture_status_pack_chan(1, MAV_COMP_ID_CAMERA, MAVLINK_COMM_0, &m, 0, 0, 1, 0, 12500, 0, 0, 0);
         s.add(frameOf(m, CapturedFrame::Rx, 1000));
@@ -259,7 +292,7 @@ private slots:
         QCOMPARE(o.recordingS, 12.5);
         QCOMPARE(o.trackMode.value_or(-1), int(PayloadLink::TrackActive));
         QCOMPARE(o.trackStatus.value_or(-1), int(PayloadLink::TrackTracked));
-        QCOMPARE(o.trackBox.value_or(QRectF()), QRectF(850, 850, 100, 100));
+        QCOMPARE(o.trackBox.value_or(QRectF()), QRectF(900, 900, 100, 100));
 
         debug(5, 100, 5000);  // only W refreshed: the box needs all four
         o = PayloadLink::operatorStatus(s, 5000 * 1000000LL, to);
@@ -300,6 +333,12 @@ private slots:
         QCOMPARE(int(mavlink_msg_param_ext_set_get_param_type(&f.msg)), int(MAV_PARAM_EXT_TYPE_UINT32));
         fake.send(paramExt(true, "C_SOURCE", f.targetComponent > 0 ? uint8_t(f.targetComponent) : 101));
         QTRY_VERIFY_WITH_TIMEOUT(find(link, QStringLiteral("View source"))->state == TrackedCommand::Accepted, 3000);
+        // ... then reads the value back, since the VIO's ACK carries none
+        QVERIFY(waitTx(fake, [](const MavFrame &x) { return x.msgid == MAVLINK_MSG_ID_PARAM_EXT_REQUEST_READ; }, &f));
+        mavlink_msg_param_ext_request_read_get_param_id(&f.msg, id);
+        QCOMPARE(QString::fromLatin1(id), QStringLiteral("C_SOURCE"));
+        QVERIFY(link.requestCameraSettings());
+        QVERIFY(waitTx(fake, [](const MavFrame &x) { return x.msgid == MAVLINK_MSG_ID_PARAM_EXT_REQUEST_LIST; }));
 
         // Continuous zoom, rejected by the camera
         QVERIFY(link.cameraZoom(ZOOM_TYPE_CONTINUOUS, 1, QStringLiteral("Zoom in")));
@@ -330,6 +369,14 @@ private slots:
         mavlink_quaternion_to_euler(q, &r, &p, &y);
         QVERIFY(std::abs(p * 180 / M_PI - (-30)) < 0.01 && std::abs(y * 180 / M_PI - 10) < 0.01);
 
+        // Rate: the profile's scale is applied on the wire and in the tracked frame match, not to the label
+        link.setGimbalRateScale(vioProfile().gimbalRateScale);
+        QVERIFY(link.gimbalRate(0, 0, 10));
+        QVERIFY(waitTx(fake, [](const MavFrame &x) { return x.msgid == MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE; }, &f));
+        QVERIFY(std::abs(mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_z(&f.msg) - 1.0f) < 1e-5f);  // 10°/s x 18/pi = 1 rad/s
+        QTRY_VERIFY_WITH_TIMEOUT(find(link, QStringLiteral("Gimbal rate pitch 0°/s roll 0°/s yaw 10°/s"))->state == TrackedCommand::NoAckDefined, 3000);
+        link.setGimbalRateScale(1);
+
         // Tracking: MAV_CMD_USER_4 to the payload core, param3 0 = mode, 1 = target position
         QVERIFY(!link.trackingTarget(2000, 10));  // outside the tracker frame
         QVERIFY(link.trackingMode(PayloadLink::TrackActive));
@@ -341,6 +388,17 @@ private slots:
         QCOMPARE(mavlink_msg_command_long_get_param1(&f.msg), 4.f);
         QCOMPARE(mavlink_msg_command_long_get_param4(&f.msg), 1.f);
         QVERIFY(link.trackingTarget(480, 270));
+        // First a rate-0 gimbal command (releases the angle hold) and ACTIVE again, then the position
+        QVERIFY(waitTx(fake, [](const MavFrame &x) {
+            if (x.msgid != MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE) return false;
+            float q[4];
+            mavlink_msg_gimbal_device_set_attitude_get_q(&x.msg, q);
+            return std::isnan(q[0]) && mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_z(&x.msg) == 0;
+        }));
+        QVERIFY(waitTx(fake, [](const MavFrame &x) {
+            return x.msgid == MAVLINK_MSG_ID_COMMAND_LONG && mavlink_msg_command_long_get_command(&x.msg) == MAV_CMD_USER_4 &&
+                   mavlink_msg_command_long_get_param3(&x.msg) == 0 && mavlink_msg_command_long_get_param4(&x.msg) == 1;
+        }));
         QVERIFY(waitTx(fake, [](const MavFrame &x) {
             return x.msgid == MAVLINK_MSG_ID_COMMAND_LONG && mavlink_msg_command_long_get_command(&x.msg) == MAV_CMD_USER_4 &&
                    mavlink_msg_command_long_get_param3(&x.msg) == 1;

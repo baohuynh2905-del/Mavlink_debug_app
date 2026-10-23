@@ -30,7 +30,7 @@ struct OperatorStatus {
     std::optional<bool> recording;              // CAMERA_CAPTURE_STATUS.video_status
     double recordingS = 0;
     std::optional<int> trackMode, trackStatus;  // TRK_STATUS = (mode << 8) | status (SDK tracking example)
-    std::optional<QRectF> trackBox;             // TRK_POS_X/Y (centre) and _W/_H, in tracker pixels
+    std::optional<QRectF> trackBox;             // TRK_POS_X/Y (top-left corner) and _W/_H, in tracker pixels
 };
 
 QString trackingStateText(int mode, int status);  // e.g. "ACTIVE / TRACKED"
@@ -69,7 +69,9 @@ public:
     bool gimbalHome();                                                // NEUTRAL set, cleared 100 ms later
     bool gimbalAngle(double pitchDeg, double rollDeg, double yawDeg);
     bool gimbalRate(double pitchDps, double rollDps, double yawDps, bool track = true);
-    bool cameraParam(const QString &label, const char *paramId, quint32 value);
+    void setGimbalRateScale(double s) { m_rateScale = s; }  // PayloadProfile::gimbalRateScale
+    bool cameraParam(const QString &label, const char *paramId, quint32 value);  // then reads the value back
+    bool requestCameraSettings();  // PARAM_EXT_REQUEST_LIST: every setting arrives as PARAM_EXT_VALUE
     bool cameraZoom(int zoomType, float value, const QString &label);   // MAV_CMD_SET_CAMERA_ZOOM
     bool cameraFocus(int focusType, float value, const QString &label); // MAV_CMD_SET_CAMERA_FOCUS
     bool cameraMode(int cameraMode);                                    // CAMERA_MODE_IMAGE / _VIDEO
@@ -84,7 +86,8 @@ public:
     // not from a spec; check on hardware and move to the payload profile if a model differs.
     static constexpr double kTrackerWidth = 1920, kTrackerHeight = 1080;
     bool trackingMode(int mode);
-    bool trackingTarget(double x, double y, double w = 128, double h = 128);  // centre and size, tracker pixels
+    // Centre and size in tracker pixels. Also sends gimbal rate 0 and mode ACTIVE first (see the definition).
+    bool trackingTarget(double x, double y, double w = 128, double h = 128);
     bool trackingStreams();  // TRK_* DEBUG parameters every 100 ms, the example's rate
     QString commandError() const { return m_commandError; }
 
@@ -95,6 +98,7 @@ public:
 
     // Names of the SDK's DEBUG parameter stream indexes (payloadParams in payloadSdkInterface.h).
     static QString payloadParamName(int index);
+    static QString sdkVersion();  // PayloadSDK's SDK_VERSION
 
     // Gimbal angle limits enforced by PayloadSdkInterface::setGimbalSpeed() in INPUT_ANGLE mode.
     static constexpr double kPitchLimit = 90, kRollLimit = 180, kYawLimit = 180;
@@ -144,4 +148,5 @@ private:
     TelemetryStore m_telemetry;
     QString m_commandError;
     bool m_autoInfoSent = false;
+    double m_rateScale = 1;
 };

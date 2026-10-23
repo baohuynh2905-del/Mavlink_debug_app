@@ -25,6 +25,7 @@ VideoPlayer::VideoPlayer(QObject *parent) : QObject(parent)
 
 VideoPlayer::~VideoPlayer()
 {
+    blockSignals(true);  // the owners are being destroyed: no stateChanged() to them from here
     stop();
 }
 

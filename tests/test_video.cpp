@@ -99,6 +99,20 @@ private slots:
         page.findChild<QPushButton *>(QStringLiteral("videoStartStop"))->click();
         QCOMPARE(page.player()->state(), VideoPlayer::State::Stopped);
     }
+
+    // The main window moves the settings panel into its drawer, which is destroyed first: closing the app while
+    // the video plays must not reach the deleted panel.
+    void closingWhilePlayingWithPanelGone()
+    {
+        auto *drawer = new QWidget;
+        auto *page = new VideoPage;
+        page->settingsPanel()->setParent(drawer);
+        drawer->findChild<QLineEdit *>(QStringLiteral("rtspUrl"))->setText(m_url);
+        page->findChild<QPushButton *>(QStringLiteral("videoStartStop"))->click();
+        QTRY_COMPARE_WITH_TIMEOUT(page->player()->state(), VideoPlayer::State::Playing, 10000);
+        delete drawer;
+        delete page;  // crashed in VideoPage::onState before the fix
+    }
 };
 
 QTEST_MAIN(TestVideo)

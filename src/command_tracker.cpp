@@ -63,7 +63,8 @@ bool CommandTracker::onFrame(const CapturedFrame &c)
     // RX: the message a request command asked for (an ACK, if one also comes, takes precedence)
     bool changed = false;
     for (TrackedCommand &x : m_cmds) {
-        if (x.responseMsgid == f.msgid && (x.state == TrackedCommand::Sent || x.state == TrackedCommand::AckTimeout) &&
+        if (x.responseMsgid && x.responseMsgid == f.msgid &&  // 0 = none, and HEARTBEAT is msgid 0
+            (x.state == TrackedCommand::Sent || x.state == TrackedCommand::AckTimeout) &&
             ms >= x.sentMs && (x.targetComponent <= 0 || x.targetComponent == f.compid)) {
             x.state = TrackedCommand::Answered;
             x.ackMs = ms;

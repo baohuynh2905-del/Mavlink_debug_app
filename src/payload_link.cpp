@@ -242,9 +242,12 @@ bool PayloadLink::gimbalAngle(double pitch, double roll, double yaw)
 bool PayloadLink::gimbalRate(double pitch, double roll, double yaw, bool track)
 {
     if (!ready()) return false;
+    const double k = m_rateScale;
     if (track) {
-        const float p = float(pitch * M_PI / 180), y = float(yaw * M_PI / 180);
-        m_tracker.expect(QStringLiteral("Gimbal rate pitch %1°/s roll %2°/s yaw %3°/s").arg(pitch).arg(roll).arg(yaw),
+        const float p = float(pitch * k * M_PI / 180), y = float(yaw * k * M_PI / 180);
+        QString label = QStringLiteral("Gimbal rate pitch %1°/s roll %2°/s yaw %3°/s").arg(pitch).arg(roll).arg(yaw);
+        if (k != 1 && (pitch || roll || yaw)) label += QStringLiteral(" (sent ×%1, payload rate scale)").arg(k, 0, 'f', 3);
+        m_tracker.expect(label,
                          MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE, 0, {}, nowMs(), [p, y](const MavFrame &f) {
                              float q[4];
                              mavlink_msg_gimbal_device_set_attitude_get_q(&f.msg, q);
@@ -254,7 +257,7 @@ bool PayloadLink::gimbalRate(double pitch, double roll, double yaw, bool track)
                          });
         emit commandsChanged();
     }
-    m_sdk->setGimbalSpeed(float(pitch), float(roll), float(yaw), INPUT_SPEED);
+    m_sdk->setGimbalSpeed(float(pitch * k), float(roll * k), float(yaw * k), INPUT_SPEED);
     return true;
 }
 
@@ -266,6 +269,18 @@ bool PayloadLink::cameraParam(const QString &label, const char *paramId, quint32
     char id[17] = {0};
     strncpy(id, paramId, 16);
     m_sdk->setPayloadCameraParam(id, value, PARAM_TYPE_UINT32);
+    // The VIO's PARAM_EXT_ACK carries no value: read the setting back so the display shows what the camera holds.
+    // Not tracked: PARAM_EXT_REQUEST_READ has no ACK, and the PARAM_EXT_VALUE answer lands in telemetry().
+    m_sdk->getPayloadCameraSettingByID(id);
+    emit commandsChanged();
+    return true;
+}
+
+bool PayloadLink::requestCameraSettings()
+{
+    if (!ready()) return false;
+    m_tracker.expect(QStringLiteral("Read all camera settings"), MAVLINK_MSG_ID_PARAM_EXT_REQUEST_LIST, 0, {}, nowMs());
+    m_sdk->getPayloadCameraSettingList();
     emit commandsChanged();
     return true;
 }
@@ -339,6 +354,11 @@ bool PayloadLink::trackingTarget(double x, double y, double w, double h)
         m_commandError = QStringLiteral("Tracking target outside the %1x%2 tracker frame").arg(kTrackerWidth).arg(kTrackerHeight);
         return false;
     }
+    // On a VIO (3.1.4.18) the gimbal keeps holding the last GIMBAL_DEVICE_SET_ATTITUDE angle and ignores the tracker:
+    // TRACKED, but no follow. A rate-0 command first (as Gremsy's demo_project does) hands the gimbal to the tracker.
+    // ACTIVE is re-sent before every position, as the SDK's tracking example does.
+    gimbalRate(0, 0, 0);
+    trackingMode(TrackActive);
     m_tracker.expect(QStringLiteral("Track target at %1, %2 (%3x%4)").arg(x, 0, 'f', 0).arg(y, 0, 'f', 0).arg(w).arg(h),
                      MAVLINK_MSG_ID_COMMAND_LONG, MAV_CMD_USER_4, {}, nowMs(), [](const MavFrame &f) {
                          return int(mavlink_msg_command_long_get_param1(&f.msg)) == 4 &&
@@ -397,7 +417,8 @@ OperatorStatus PayloadLink::operatorStatus(const TelemetryStore &t, qint64 nowNs
         s.trackStatus = int(*v) & 0xFF;
     }
     const auto x = param(PARAM_TRACK_POS_X), y = param(PARAM_TRACK_POS_Y), w = param(PARAM_TRACK_POS_W), h = param(PARAM_TRACK_POS_H);
-    if (x && y && w && h && *w > 0 && *h > 0) s.trackBox = QRectF(*x - *w / 2, *y - *h / 2, *w, *h);
+    // Top-left corner: a pick at 960,540 with 128x128 reports 896,476 on a VIO (3.1.4.18)
+    if (x && y && w && h && *w > 0 && *h > 0) s.trackBox = QRectF(*x, *y, *w, *h);
     return s;
 }
 
@@ -440,6 +461,8 @@ bool PayloadLink::requestPayloadInfo(bool automatic)
     emit commandsChanged();
     return true;
 }
+
+QString PayloadLink::sdkVersion() { return QStringLiteral(SDK_VERSION); }
 
 QString PayloadLink::payloadParamName(int index)
 {

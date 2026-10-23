@@ -3,6 +3,7 @@
 #include "captured_frame.h"
 #include "mavlink_dict.h"
 #include "profiles.h"
+#include "splash.h"
 
 #include <QList>
 #include <QMainWindow>
@@ -31,6 +32,7 @@ public:
     ~MainWindow() override;
 
     PayloadLink *link() const { return m_link; }
+    std::vector<BootCheck> bootChecks() const;  // what the constructor loaded, for the boot splash
 
 protected:
     void closeEvent(QCloseEvent *e) override;

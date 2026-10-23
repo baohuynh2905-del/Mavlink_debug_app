@@ -1,6 +1,7 @@
 #include "telemetry.h"
 
 #include <cmath>
+#include <cstring>
 
 namespace GimbalFlags {
 
@@ -76,6 +77,12 @@ void TelemetryStore::add(const CapturedFrame &c)
         mavlink_debug_t d;
         mavlink_msg_debug_decode(&c.frame.msg, &d);
         m_params[d.ind] = {d.value, c.monoNs};
+    } else if (c.frame.msgid == MAVLINK_MSG_ID_PARAM_EXT_VALUE) {
+        mavlink_param_ext_value_t v;
+        mavlink_msg_param_ext_value_decode(&c.frame.msg, &v);
+        quint32 value;  // the uint32 in the first bytes, as the SDK's _handle_msg_param_ext_value() reads it
+        memcpy(&value, v.param_value, sizeof value);
+        m_cameraParams[QString::fromLatin1(v.param_id, int(strnlen(v.param_id, sizeof v.param_id)))] = {double(value), c.monoNs};
     }
 }
 

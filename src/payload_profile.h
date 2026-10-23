@@ -10,6 +10,15 @@ struct ParamOption {
     const char *label;
 };
 
+// One PARAM_EXT camera setting, for the camera settings dialog.
+struct CameraSetting {
+    const char *group;  // dialog tab
+    const char *label;
+    const char *id;
+    std::vector<ParamOption> options;  // empty: a number from min to max
+    unsigned min = 0, max = 0;
+};
+
 struct PayloadProfile {
     const char *name;
     const char *viewSourceId;            // PARAM_EXT id, nullptr = unsupported
@@ -22,6 +31,9 @@ struct PayloadProfile {
     std::vector<ParamOption> gimbalModes;
     const char *trackingModeId;  // PARAM_EXT_SET that selects object tracking before arming the tracker
     unsigned trackingObjectMode;
+    std::vector<CameraSetting> cameraSettings;
+    // Gimbal rate commands are multiplied by this before sending (1 = MAVLink's rad/s as the SDK sends it).
+    double gimbalRateScale = 1;
 };
 
 const PayloadProfile &vioProfile();

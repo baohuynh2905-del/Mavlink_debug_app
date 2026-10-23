@@ -16,16 +16,24 @@ results, acceptance checklist, limitations). For setup on native Ubuntu, see
   - Dark station theme (`src/theme.*`).
   - One Operate workspace (gimbal | video with HUD | camera), plus an Analyze view.
   - A collapsible MAVLink monitor and a SETTINGS drawer.
-  - Object tracking control added. It is **untested on hardware**, and the 1920×1080 tracker pixel
-    space is an assumption.
+  - Object tracking control added.
+- 2026-10-23 (native Ubuntu, VIO over USB-C):
+  - Tracking fixed and verified (see facts).
+  - Gimbal speed slider with the VIO rate scale.
+  - Camera settings dialog (30 settings).
+  - Boot splash.
+  - Fixed a crash on exit while the video plays, and HEARTBEAT being matched as a command's answer.
+  - `hw_vio_commands --steps camera,angle,rate,mode-param,tracking,settings`: 59/59 checks passed.
 
 ## Next steps
 
 1. Native build: `scripts/build.sh` should report 9/9 tests passing.
-2. Run the open hardware checks in `docs/INSTALL_UBUNTU.md` §7 (a: passive capture, b: screenshots,
-   c: control path) and analyse their outputs. Compare them with the WSL2 results in the README's
-   *Hardware checks*.
-3. On native Linux, verify RTSP over UDP and live network capture (both impossible under WSL2).
+2. On native Linux, verify RTSP over UDP and live network capture (both impossible under WSL2).
+   `ffmpeg -rtsp_transport udp` got only 3 frames on 2026-10-23 (TCP fine). The laptop then had two
+   addresses in 192.168.55.0/24 (`.3` and `.100`), which may matter.
+3. Ask the user for the original `C_V_RGAIN`, `C_V_BGAIN` and `C_V_ICR_THR`. They were set to 0 by
+   mistake on 2026-10-23 (originals were 128–255, unknown). They have no effect while white balance is
+   Auto and ICR is Manual.
 4. Optional: payload profiles for ZIO / MB1 / OrusL (`src/payload_profile_<model>.cpp`, values only
    from `third_party/PayloadSdk/libs/payload-define/<model>_sdk.h`).
 
@@ -34,9 +42,12 @@ results, acceptance checklist, limitations). For setup on native Ubuntu, see
 - **Ask first** before any command that moves the gimbal or changes the payload's state.
   - Approved so far: camera zoom/focus/settings, small gimbal angle/rate moves, and LOCK/FOLLOW mode
     changes, each undone afterwards.
-  - **Not approved:** photo capture or recording (SD writes), gimbal OFF / RESET / MAPPING,
-    changing `RC_MODE` (a persistent setting), and object tracking (Arm changes `TRACK_MODE`; tracking
-    moves the gimbal). Re-ask for these.
+  - Approved on 2026-10-23: object tracking (the gimbal follows), and writing camera settings, each
+    restored afterwards.
+  - **Not approved:** photo capture or recording (SD writes), gimbal OFF / RESET / MAPPING, and
+    changing `RC_MODE` (a persistent setting). Re-ask for these.
+  - Never write a camera setting value that was not read back through a decoder already checked
+    against the camera (`--steps settings-read`).
 - Commit and push to GitHub when a stage or fix is finished.
   - Author: `Huynh Gia Bao <baohuynh2905@gmail.com>`. Set it per clone with `git config user.name` /
     `git config user.email`; it is not stored in the repo.
@@ -51,7 +62,20 @@ results, acceptance checklist, limitations). For setup on native Ubuntu, see
   the `sdkQuit()` hang. Never edit the submodule directly; change the patch.
 - **Gimbal modes on VIO software 3.1.4.18:** only `PARAM_EXT_SET GB_MODE` works. The SDK's flag
   route (`GIMBAL_DEVICE_SET_ATTITUDE` flags) has no effect.
-- **Gimbal rate:** a commanded 10°/s gave about 1.7°/s, probably because of `RC_MODE`; not verified.
+- **Gimbal rate:** the VIO (3.1.4.18) turns at the commanded rate × π/18 on both axes. `RC_MODE` was
+  already Standard, so it is not the cause. `PayloadProfile::gimbalRateScale` = 18/π compensates
+  (measured 9.8 and 29.4°/s for 10 and 30).
+- **Gimbal yaw angle:** lands about 2.7° off the commanded yaw; pitch is exact.
+- **Tracking:**
+  - The gimbal follows only if the last gimbal input was not an angle command, so
+    `trackingTarget()` sends rate 0 first.
+  - `TRK_POS_X/Y` is the box's top-left corner.
+  - The tracker space is 1920×1080; this was checked against the OSD's own box.
+- **Camera settings:**
+  - The `PARAM_EXT_ACK` carries no value.
+  - The camera lists `C_V_GAIN` and `C_V_BrP` and rejects the header's `_HS`/`_LS` IDs.
+  - It answered parameter messages only from source component IDs it had already seen (new compids
+    195/196 got no reply, 191/193/194 did). The app's SDK compid works.
 - **Camera component:** compid 100 (not 101).
 - **REQUEST_MESSAGE:** answered with the message itself but no COMMAND_ACK.
 - **Sequence numbers:** the VIO payload core and camera reorder them (N+1 before N). This is not

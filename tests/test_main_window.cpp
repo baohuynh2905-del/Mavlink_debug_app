@@ -3,12 +3,17 @@
 #include "main_window.h"
 #include "payload_pages.h"
 #include "payload_link.h"
+#include "splash.h"
 #include "video_page.h"
 #include "theme.h"
 #include "video_player.h"
 
 #include <QApplication>
+#include <QComboBox>
+#include <QDialog>
 #include <QLineEdit>
+#include <QSignalSpy>
+#include <QSlider>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTabWidget>
@@ -16,6 +21,7 @@
 #include <QtTest>
 
 #include <cmath>
+#include <functional>
 
 #include "fake_payload.h"
 
@@ -53,6 +59,32 @@ private slots:
             save(QStringLiteral("analyze_") + tabs->tabText(i).toLower());
         }
         w.findChild<QPushButton *>(QStringLiteral("navOperate"))->click();
+    }
+
+    void bootSplashEndsByItselfOrOnClick()
+    {
+        MainWindow w;
+        const std::vector<BootCheck> checks = w.bootChecks();
+        QCOMPARE(checks.size(), size_t(4));
+        QVERIFY(checks[2].value.startsWith(QStringLiteral("VIO")));
+
+        BootSplash s(checks);
+        QSignalSpy done(&s, &BootSplash::finished);
+        s.start();
+        QTest::qWait(1500);
+        QVERIFY(done.isEmpty() && s.isVisible());
+        if (const QByteArray dir = qgetenv("SCREENSHOT_DIR"); !dir.isEmpty())
+            s.grab().save(QString::fromLocal8Bit(dir) + QStringLiteral("/splash.png"));
+        QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, BootSplash::kShowMs);
+        QTRY_VERIFY_WITH_TIMEOUT(!s.isVisible(), 2 * BootSplash::kFadeMs);
+
+        BootSplash skipped(checks);
+        QSignalSpy skip(&skipped, &BootSplash::finished);
+        skipped.start();
+        QTest::mouseClick(&skipped, Qt::LeftButton);
+        QCOMPARE(skip.size(), 1);  // at once
+        QTest::mouseClick(&skipped, Qt::LeftButton);
+        QCOMPARE(skip.size(), 1);  // only once
     }
 
     void invalidIpIsRejectedWithoutConnecting()
@@ -133,6 +165,80 @@ private slots:
         camera->trackAt(QPointF(0.5, 0.5));
         QCOMPARE(w.link()->tracker().commands().size(), before);
 
+        auto buttonText = [&](const QString &text) {
+            for (QPushButton *b : w.findChildren<QPushButton *>()) if (b->text() == text) return b;
+            return static_cast<QPushButton *>(nullptr);
+        };
+        auto sent = [&](const std::function<bool(const MavFrame &)> &pred) {
+            QElapsedTimer t;
+            t.start();
+            while (t.elapsed() < 3000) {
+                for (const MavFrame &f : fake.received()) if (pred(f)) return true;
+                QTest::qWait(10);
+            }
+            return false;
+        };
+        auto user4 = [](const MavFrame &f, float p3, float p4) {
+            return f.msgid == MAVLINK_MSG_ID_COMMAND_LONG && mavlink_msg_command_long_get_command(&f.msg) == MAV_CMD_USER_4 &&
+                   mavlink_msg_command_long_get_param3(&f.msg) == p3 && mavlink_msg_command_long_get_param4(&f.msg) == p4;
+        };
+        fake.received();
+        QVERIFY(buttonText(QStringLiteral("Select target")) && buttonText(QStringLiteral("Stop tracking")));
+        buttonText(QStringLiteral("Select target"))->click();
+        QVERIFY(camera->trackArmed());
+        QVERIFY(sent([&](const MavFrame &f) { return user4(f, 0, 1); }));  // ACTIVE
+        camera->trackAt(QPointF(0.25, 0.25));                                  // a click on the video
+        QVERIFY(sent([&](const MavFrame &f) { return user4(f, 1, 480) && mavlink_msg_command_long_get_param5(&f.msg) == 270; }));
+        buttonText(QStringLiteral("Stop tracking"))->click();
+        QVERIFY(!camera->trackArmed());
+        QVERIFY(sent([&](const MavFrame &f) { return user4(f, 0, 0); }));  // STOP
+
+        // Speed slider: holding an arrow sends the slider's speed, scaled by the VIO profile
+        auto *speed = w.findChild<QSlider *>();
+        for (QSlider *sl : w.findChildren<QSlider *>()) if (sl->maximum() == 90) speed = sl;
+        QVERIFY(speed);
+        speed->setValue(30);
+        QPushButton *up = buttonText(QStringLiteral("▲"));
+        QVERIFY(up);
+        QTest::mousePress(up, Qt::LeftButton);
+        QVERIFY(sent([](const MavFrame &f) {
+            return f.msgid == MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE &&
+                   std::abs(mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_y(&f.msg) - 3.0f) < 1e-4f;  // 30°/s x 18/pi
+        }));
+        QTest::mouseRelease(up, Qt::LeftButton);
+        QVERIFY(sent([](const MavFrame &f) {
+            return f.msgid == MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE && mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_y(&f.msg) == 0;
+        }));
+
+        // Camera settings dialog: the controls follow what the camera reports
+        char id[16] = {0}, value[128] = {0};
+        strncpy(id, "C_V_WB", sizeof id);
+        value[0] = 2;  // Outdoor
+        mavlink_msg_param_ext_value_pack_chan(1, MAV_COMP_ID_CAMERA, MAVLINK_COMM_0, &m, id, value, MAV_PARAM_EXT_TYPE_UINT32, 44, 30);
+        fake.send(m);
+        QPushButton *all = nullptr;
+        for (QPushButton *b : w.findChildren<QPushButton *>())
+            if (b->text().contains(QStringLiteral("All camera settings"))) all = b;
+        QVERIFY(all && all->isEnabled());
+        all->click();
+        auto *dialog = w.findChild<QDialog *>();
+        QVERIFY(dialog && dialog->isVisible());
+        QComboBox *wb = nullptr;
+        for (QComboBox *c : dialog->findChildren<QComboBox *>())
+            if (c->findText(QStringLiteral("ATW (auto tracing)")) >= 0) wb = c;
+        QVERIFY(wb);
+        QTRY_COMPARE_WITH_TIMEOUT(wb->currentText(), QStringLiteral("Outdoor"), 3000);
+        bool listRequested = false;  // opening the dialog reads every setting
+        QTRY_VERIFY_WITH_TIMEOUT([&] {
+            for (const MavFrame &f : fake.received()) listRequested |= f.msgid == MAVLINK_MSG_ID_PARAM_EXT_REQUEST_LIST;
+            return listRequested;
+        }(), 3000);
+        if (const QByteArray dir = qgetenv("SCREENSHOT_DIR"); !dir.isEmpty()) {
+            QTest::qWait(300);
+            dialog->grab().save(QString::fromLocal8Bit(dir) + QStringLiteral("/camera_settings.png"));
+        }
+        dialog->close();
+
         if (const QByteArray dir = qgetenv("SCREENSHOT_DIR"); !dir.isEmpty()) {
             w.resize(1440, 900);
             shootViews(w, QString::fromLocal8Bit(dir), {});
@@ -159,6 +265,34 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(video->player()->state(), VideoPlayer::State::Playing, 15000);
         QTest::qWait(4000);  // info replies and parameter streams
         shootViews(w, QString::fromLocal8Bit(dir), QStringLiteral("hw_"));
+
+        // Camera settings dialog with the camera's values (opening it only reads)
+        for (QPushButton *b : w.findChildren<QPushButton *>()) if (b->text().contains(QStringLiteral("All camera settings"))) b->click();
+        auto *dialog = w.findChild<QDialog *>();
+        QVERIFY(dialog);
+        QTRY_VERIFY_WITH_TIMEOUT(w.link()->telemetry().cameraParams().size() >= 40, 5000);
+        QTest::qWait(500);
+        auto *tabs = dialog->findChild<QTabWidget *>();
+        for (int i = 0; i < tabs->count(); ++i) {
+            tabs->setCurrentIndex(i);
+            QTest::qWait(400);
+            dialog->grab().save(QString::fromLocal8Bit(dir) + QStringLiteral("/hw_camera_settings_%1.png").arg(i));
+        }
+        dialog->close();
+
+        // HW_TRACK=1 also tracks the picture centre (approved: the gimbal may move a little) to compare the HUD box
+        // with the box the camera's own OSD draws
+        if (qgetenv("HW_TRACK") == "1") {
+            auto *camera = w.findChild<CameraPage *>();
+            for (QPushButton *b : w.findChildren<QPushButton *>()) if (b->text() == QStringLiteral("Select target")) b->click();
+            QVERIFY(camera->trackArmed());
+            camera->trackAt(QPointF(0.5, 0.5));
+            QTRY_VERIFY_WITH_TIMEOUT(w.link()->operatorStatus().trackStatus.value_or(-1) == PayloadLink::TrackTracked, 3000);
+            QTest::qWait(1500);
+            video->view()->grab().save(QString::fromLocal8Bit(dir) + QStringLiteral("/hw_tracking.png"));
+            for (QPushButton *b : w.findChildren<QPushButton *>()) if (b->text() == QStringLiteral("Stop tracking")) b->click();
+            QTRY_VERIFY_WITH_TIMEOUT(w.link()->operatorStatus().trackMode.value_or(-1) == PayloadLink::TrackStop, 3000);
+        }
         w.findChild<QPushButton *>(QStringLiteral("connectButton"))->click();
         QTRY_COMPARE_WITH_TIMEOUT(w.link()->state(), LinkState::Disconnected, 3000);
     }
