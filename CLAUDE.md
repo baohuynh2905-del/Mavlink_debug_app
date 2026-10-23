@@ -23,7 +23,13 @@ results, acceptance checklist, limitations). For setup on native Ubuntu, see
   - Camera settings dialog (30 settings).
   - Boot splash.
   - Fixed a crash on exit while the video plays, and HEARTBEAT being matched as a command's answer.
-  - `hw_vio_commands --steps camera,angle,rate,mode-param,tracking,settings`: 59/59 checks passed.
+  - `hw_vio_commands --steps camera,angle,rate,mode-param,tracking,settings`: 59/59 checks passed (on 3.1.4.18).
+- 2026-10-23, later: the VIO was updated to software **3.1.8.21**:
+  - Modes now use the flag route.
+  - The gimbal panel shows and switches the control source (`GB_FW_FLAG`).
+  - Rate compensation removed.
+  - The automatic info request now waits for the camera's heartbeat.
+  - `--steps control-onboard,camera,rate,mode-flags` passed.
 
 ## Next steps
 
@@ -60,12 +66,18 @@ results, acceptance checklist, limitations). For setup on native Ubuntu, see
 - **Transport:** the SDK's `UDP_Port` is a UDP client (ephemeral local port).
   `patches/payloadsdk-transport-observer.patch` (applied by CMake) adds the TX/RX observer and fixes
   the `sdkQuit()` hang. Never edit the submodule directly; change the patch.
-- **Gimbal modes on VIO software 3.1.4.18:** only `PARAM_EXT_SET GB_MODE` works. The SDK's flag
-  route (`GIMBAL_DEVICE_SET_ATTITUDE` flags) has no effect.
-- **Gimbal rate:** the VIO (3.1.4.18) turns at the commanded rate × π/18 on both axes. `RC_MODE` was
-  already Standard, so it is not the cause. `PayloadProfile::gimbalRateScale` = 18/π compensates
-  (measured 9.8 and 29.4°/s for 10 and 30).
-- **Gimbal yaw angle:** lands about 2.7° off the commanded yaw; pitch is exact.
+- **Gimbal modes:** on 3.1.8.21 only the flags in `GIMBAL_DEVICE_SET_ATTITUDE` work (Gremsy's way since
+  v307.54); `PARAM_EXT_SET GB_MODE` is rejected. On 3.1.4.18 it was the other way round.
+- **Gimbal control source `GB_FW_FLAG`** (3.1.8.21):
+  - 0 = Autopilot (the user's setting): the payload drops all our `GIMBAL_DEVICE_SET_ATTITUDE`.
+  - 1 = Onboard computer: modes and rates work.
+  - It is a stored setting. The user chose to switch it from the gimbal panel themselves; tests restore it.
+- **Gimbal rate:** in real units on 3.1.8.21 (10°/s gives about 12°/s peak). 3.1.4.18 turned at
+  × π/18; that compensation is gone.
+- **Gimbal angle:** works on 3.1.4.18 (yaw lands about 2.7° off); no effect at all on 3.1.8.21 by any route
+  tried. Ask Gremsy.
+- **SDK camera compid:** the SDK addresses the camera at 101 until it hears compid 100, so the automatic
+  requests wait for the camera's heartbeat.
 - **Tracking:**
   - The gimbal follows only if the last gimbal input was not an angle command, so
     `trackingTarget()` sends rate 0 first.

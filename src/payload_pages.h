@@ -64,7 +64,9 @@ private:
     QSlider *m_speed;  // °/s for the hold-to-move pad
     QLabel *m_readout[3];  // pitch, roll, yaw
     QLabel *m_commanded, *m_attitude, *m_rates, *m_mode, *m_flags, *m_failures, *m_delta;
-    std::vector<std::pair<unsigned, QPushButton *>> m_modeButtons;  // GB_MODE value, highlighted when reported
+    std::vector<std::pair<QString, QPushButton *>> m_modeButtons;  // GimbalFlags::modeName() prefix, lit when reported
+    QComboBox *m_control = nullptr;  // the payload's gimbal control source
+    QLabel *m_controlHint = nullptr;
     QTimer *m_rateTimer;
     double m_ratePitch = 0, m_rateYaw = 0;
     QPushButton *m_held = nullptr;

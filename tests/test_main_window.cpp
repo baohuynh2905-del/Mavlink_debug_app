@@ -11,6 +11,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDialog>
+#include <QLabel>
 #include <QLineEdit>
 #include <QSignalSpy>
 #include <QSlider>
@@ -203,12 +204,48 @@ private slots:
         QTest::mousePress(up, Qt::LeftButton);
         QVERIFY(sent([](const MavFrame &f) {
             return f.msgid == MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE &&
-                   std::abs(mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_y(&f.msg) - 3.0f) < 1e-4f;  // 30°/s x 18/pi
+                   std::abs(mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_y(&f.msg) - float(30 * M_PI / 180)) < 1e-4f;
         }));
         QTest::mouseRelease(up, Qt::LeftButton);
         QVERIFY(sent([](const MavFrame &f) {
             return f.msgid == MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE && mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_y(&f.msg) == 0;
         }));
+
+        // Mode buttons: the mode flags in GIMBAL_DEVICE_SET_ATTITUDE (the gimbal reported LOCK above), no angle
+        QVERIFY(buttonText(QStringLiteral("LOCK"))->property("active").toBool());
+        buttonText(QStringLiteral("FOLLOW"))->click();
+        QVERIFY(sent([](const MavFrame &f) {
+            if (f.msgid != MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE) return false;
+            float q[4];
+            mavlink_msg_gimbal_device_set_attitude_get_q(&f.msg, q);
+            return std::isnan(q[0]) && mavlink_msg_gimbal_device_set_attitude_get_flags(&f.msg) == 0;
+        }));
+
+        // Control source: shows what the payload reports, warns unless Onboard computer, and switches it
+        QComboBox *control = nullptr;
+        for (QComboBox *c : w.findChildren<QComboBox *>())
+            if (c->findText(QStringLiteral("Onboard computer")) >= 0) control = c;
+        QVERIFY(control);
+        char fid[16] = {0}, fval[128] = {0};  // fval[0] = 0: Autopilot
+        strncpy(fid, "GB_FW_FLAG", sizeof fid);
+        mavlink_msg_param_ext_value_pack_chan(1, MAV_COMP_ID_CAMERA, MAVLINK_COMM_0, &m, fid, fval, MAV_PARAM_EXT_TYPE_UINT32, 44, 52);
+        fake.send(m);
+        QTRY_COMPARE_WITH_TIMEOUT(control->currentText(), QStringLiteral("Autopilot"), 3000);
+        QLabel *hint = nullptr;
+        for (QLabel *l : w.findChildren<QLabel *>()) if (l->text().contains(QStringLiteral("ignores this app"))) hint = l;
+        QVERIFY(hint);
+        emit control->activated(control->findText(QStringLiteral("Onboard computer")));
+        QVERIFY(sent([](const MavFrame &f) {
+            if (f.msgid != MAVLINK_MSG_ID_PARAM_EXT_SET) return false;
+            char pid[17] = {0}, v[129] = {0};
+            mavlink_msg_param_ext_set_get_param_id(&f.msg, pid);
+            mavlink_msg_param_ext_set_get_param_value(&f.msg, v);
+            return QLatin1String(pid) == QLatin1String("GB_FW_FLAG") && v[0] == 1;
+        }));
+        fval[0] = 1;  // the payload's read-back
+        mavlink_msg_param_ext_value_pack_chan(1, MAV_COMP_ID_CAMERA, MAVLINK_COMM_0, &m, fid, fval, MAV_PARAM_EXT_TYPE_UINT32, 44, 52);
+        fake.send(m);
+        QTRY_VERIFY_WITH_TIMEOUT(hint->text().isEmpty(), 3000);
 
         // Camera settings dialog: the controls follow what the camera reports
         char id[16] = {0}, value[128] = {0};

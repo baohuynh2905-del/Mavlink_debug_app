@@ -2,7 +2,6 @@
 
 #include "vio_sdk.h"  // SDK libs/payload-define: the only source of these IDs and values
 
-#include <cmath>
 #include <initializer_list>
 
 // Options numbered 0, 1, 2 ... in order, for the header's sequential zoom enums.
@@ -168,10 +167,11 @@ const PayloadProfile &vioProfile()
              {{PAYLOAD_LRF_MODE_OFF, "Off"}, {PAYLOAD_LRF_MODE_1HZ, "1 Hz"}, {PAYLOAD_LRF_MODE_4HZ, "4 Hz"},
               {PAYLOAD_LRF_MODE_10HZ, "10 Hz"}}},
         },
-        // Measured, not from the header: VIO software 3.1.4.18 turns at commanded rate x pi/18 on yaw and pitch
-        // (10 deg/s -> 1.7, 30 -> 5.2; RC_MODE was already STANDARD). x 18/pi gave 9.8 and 29.4 deg/s.
-        // shortcut: fixed for this firmware; re-measure (hw_vio_commands --steps rate) after a payload update.
-        18 / M_PI,
+        // Not in vio_sdk.h: from the payload's own camera definition (vio_camera_g1_def.xml, software 3.1.8.21).
+        // With Autopilot, the VIO drops this app's GIMBAL_DEVICE_SET_ATTITUDE (mode flags and rates).
+        "GB_FW_FLAG",
+        {{0, "Autopilot"}, {1, "Onboard computer"}, {2, "SBUS Convert"}},
+        1,
     };
     return p;
 }

@@ -69,7 +69,6 @@ public:
     bool gimbalHome();                                                // NEUTRAL set, cleared 100 ms later
     bool gimbalAngle(double pitchDeg, double rollDeg, double yawDeg);
     bool gimbalRate(double pitchDps, double rollDps, double yawDps, bool track = true);
-    void setGimbalRateScale(double s) { m_rateScale = s; }  // PayloadProfile::gimbalRateScale
     bool cameraParam(const QString &label, const char *paramId, quint32 value);  // then reads the value back
     bool requestCameraSettings();  // PARAM_EXT_REQUEST_LIST: every setting arrives as PARAM_EXT_VALUE
     bool cameraZoom(int zoomType, float value, const QString &label);   // MAV_CMD_SET_CAMERA_ZOOM
@@ -148,5 +147,4 @@ private:
     TelemetryStore m_telemetry;
     QString m_commandError;
     bool m_autoInfoSent = false;
-    double m_rateScale = 1;
 };

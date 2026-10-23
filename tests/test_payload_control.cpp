@@ -264,7 +264,8 @@ private slots:
         QVERIFY(ids.contains(QStringLiteral("C_V_SP")) && ids.contains(QStringLiteral("C_V_GAIN")));  // C_V_GAIN: as the camera lists it
         QVERIFY(!ids.contains(QStringLiteral("RC_MODE")));  // persistent gimbal control setting: not in the camera menu
         QCOMPARE(p.cameraSettings.front().options.front().value, 0u);  // exposure Auto
-        QVERIFY(std::abs(p.gimbalRateScale - 18 / M_PI) < 1e-9);  // measured on a VIO (3.1.4.18)
+        QCOMPARE(QString::fromLatin1(p.gimbalControlId), QStringLiteral("GB_FW_FLAG"));  // from the payload's definition file
+        QCOMPARE(QString::fromLatin1(p.gimbalControls.at(p.gimbalControlOnboard).label), QStringLiteral("Onboard computer"));
     }
 
     void operatorStatusUsesFreshValuesOnly()
@@ -310,8 +311,12 @@ private slots:
         QTRY_STATE(link, LinkState::SocketOpen, 5000);
         QVERIFY(fake.learnAppEndpoint());
 
-        // Payload core heartbeat -> one automatic info request (no movement or camera action)
+        // Payload core and camera heartbeats -> one automatic info request (no movement or camera action),
+        // sent only once the camera is heard, so the SDK addresses it at its real compid
         fake.sendHeartbeat(TelemetryStore::kPayloadCore, MAV_TYPE_GENERIC);
+        QTest::qWait(300);
+        QVERIFY(!find(link, QStringLiteral("Auto: Request component info")));
+        fake.sendHeartbeat(MAV_COMP_ID_CAMERA, MAV_TYPE_CAMERA);
         MavFrame f;
         QVERIFY(waitTx(fake, [](const MavFrame &x) {
             return x.msgid == MAVLINK_MSG_ID_COMMAND_LONG && mavlink_msg_command_long_get_command(&x.msg) == MAV_CMD_REQUEST_MESSAGE &&
@@ -321,6 +326,7 @@ private slots:
         fake.send(commandAck(TelemetryStore::kPayloadCore, MAV_CMD_REQUEST_MESSAGE, MAV_RESULT_ACCEPTED));
         QTRY_VERIFY_WITH_TIMEOUT(find(link, QStringLiteral("Auto: Request component info")) &&
                                  find(link, QStringLiteral("Auto: Request component info"))->state == TrackedCommand::Accepted, 3000);
+        QTRY_COMPARE_WITH_TIMEOUT(find(link, QStringLiteral("Auto: Read all camera settings"))->targetComponent, int(MAV_COMP_ID_CAMERA), 3000);
 
         // Camera parameter: PARAM_EXT_SET carries the uint32 bytes, as setPayloadCameraParam() encodes them
         QVERIFY(link.cameraParam(QStringLiteral("View source"), vioProfile().viewSourceId, 1));
@@ -369,13 +375,11 @@ private slots:
         mavlink_quaternion_to_euler(q, &r, &p, &y);
         QVERIFY(std::abs(p * 180 / M_PI - (-30)) < 0.01 && std::abs(y * 180 / M_PI - 10) < 0.01);
 
-        // Rate: the profile's scale is applied on the wire and in the tracked frame match, not to the label
-        link.setGimbalRateScale(vioProfile().gimbalRateScale);
+        // Rate: rad/s on the wire, as MAVLink defines it (a VIO on 3.1.8.21 turns at the requested speed)
         QVERIFY(link.gimbalRate(0, 0, 10));
         QVERIFY(waitTx(fake, [](const MavFrame &x) { return x.msgid == MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE; }, &f));
-        QVERIFY(std::abs(mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_z(&f.msg) - 1.0f) < 1e-5f);  // 10°/s x 18/pi = 1 rad/s
+        QVERIFY(std::abs(mavlink_msg_gimbal_device_set_attitude_get_angular_velocity_z(&f.msg) - float(10 * M_PI / 180)) < 1e-5f);
         QTRY_VERIFY_WITH_TIMEOUT(find(link, QStringLiteral("Gimbal rate pitch 0°/s roll 0°/s yaw 10°/s"))->state == TrackedCommand::NoAckDefined, 3000);
-        link.setGimbalRateScale(1);
 
         // Tracking: MAV_CMD_USER_4 to the payload core, param3 0 = mode, 1 = target position
         QVERIFY(!link.trackingTarget(2000, 10));  // outside the tracker frame

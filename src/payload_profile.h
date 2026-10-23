@@ -27,13 +27,15 @@ struct PayloadProfile {
     std::vector<ParamOption> recordSources;
     const char *irPaletteId;
     std::vector<ParamOption> irPalettes;
-    const char *gimbalModeId;  // PARAM_EXT_SET gimbal mode (older route than the attitude flags)
+    const char *gimbalModeId;  // GB_MODE: names the mode in the DEBUG stream; as PARAM_EXT_SET only up to VIO 3.1.4.18
     std::vector<ParamOption> gimbalModes;
     const char *trackingModeId;  // PARAM_EXT_SET that selects object tracking before arming the tracker
     unsigned trackingObjectMode;
     std::vector<CameraSetting> cameraSettings;
-    // Gimbal rate commands are multiplied by this before sending (1 = MAVLink's rad/s as the SDK sends it).
-    double gimbalRateScale = 1;
+    // The payload's gimbal control source: gimbal commands from this app pass only when it is gimbalControlOnboard
+    const char *gimbalControlId = nullptr;
+    std::vector<ParamOption> gimbalControls;
+    unsigned gimbalControlOnboard = 0;
 };
 
 const PayloadProfile &vioProfile();

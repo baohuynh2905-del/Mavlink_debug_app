@@ -76,41 +76,58 @@ static QGroupBox *group(const QString &title, QLayout *layout)
 GimbalPage::GimbalPage(PayloadLink *link, const MavlinkDict *dict, const PayloadProfile &profile, QWidget *parent)
     : PayloadPage(link, dict, parent), m_profile(profile)
 {
-    link->setGimbalRateScale(profile.gimbalRateScale);
-
-    // Mode: PARAM_EXT_SET GB_MODE (Mavlink_Command_List "Set gimbal mode"). The SDK's newer route
-    // (flags in GIMBAL_DEVICE_SET_ATTITUDE) had no effect on a VIO running software 3.1.4.18.
+    // Mode: the mode bits in GIMBAL_DEVICE_SET_ATTITUDE flags, Gremsy's route since payload software v307.54 (SDK
+    // gimbal_set_mode example). A VIO on 3.1.8.21 rejects the older PARAM_EXT_SET GB_MODE.
+    using C = GimbalFlags::Change;
+    const struct { const char *label; C change; } modeList[] = {
+        {"OFF…", C::MotorsOff}, {"LOCK", C::Lock}, {"FOLLOW", C::Follow}, {"MAPPING", C::Mapping}, {"RESET", C::HomeSet}};
     auto *modes = new QGridLayout;
     int i = 0;
-    for (const ParamOption &o : m_profile.gimbalModes) {
-        const QString name = QString::fromLatin1(o.label);
-        const bool off = name == QLatin1String("OFF");
-        QPushButton *b = button(off ? QStringLiteral("OFF…") : name,
-                                QStringLiteral("PARAM_EXT_SET %1 = %2. Confirmed by PARAM_EXT_ACK; the mode the gimbal reports "
-                                               "(GB_MODE) is highlighted.").arg(QLatin1String(m_profile.gimbalModeId)).arg(o.value),
+    for (const auto &m : modeList) {
+        const QString name = QString::fromUtf8(m.label).remove(QChar(0x2026));
+        const bool off = m.change == C::MotorsOff;
+        QPushButton *b = button(QString::fromUtf8(m.label),
+                                QStringLiteral("GIMBAL_DEVICE_SET_ATTITUDE flags. It has no ACK: the mode the gimbal reports is lit. "
+                                               "LOCK and FOLLOW also switch the motors back on after OFF."),
                                 off ? "danger" : nullptr);
-        connect(b, &QPushButton::clicked, this, [this, name, off, v = o.value] {
+        connect(b, &QPushButton::clicked, this, [this, name, off, change = m.change] {
             if (off && QMessageBox::question(this, QStringLiteral("Gimbal OFF"),
                                              QStringLiteral("Switch the gimbal to OFF? The camera will not be stabilised "
                                                             "and may drop to its end stop.")) != QMessageBox::Yes)
                 return;
-            report(m_link->cameraParam(QStringLiteral("Gimbal mode ") + name, m_profile.gimbalModeId, v));
+            report(change == C::HomeSet ? m_link->gimbalHome() : m_link->gimbalMode(change, QStringLiteral("Gimbal mode ") + name));
         });
         modes->addWidget(b, i / 3, i % 3);
-        m_modeButtons.emplace_back(o.value, b);
+        m_modeButtons.emplace_back(name, b);
         ++i;
     }
-    if (!m_profile.gimbalModeId) modes->addWidget(new QLabel(QStringLiteral("Gimbal modes not supported by this profile")), 0, 0);
+    if (m_profile.gimbalControlId) {
+        m_control = new QComboBox;
+        for (const ParamOption &o : m_profile.gimbalControls) m_control->addItem(QString::fromLatin1(o.label), o.value);
+        m_control->setCurrentIndex(-1);
+        m_control->setPlaceholderText(QStringLiteral("not read yet"));
+        m_control->setToolTip(QStringLiteral("PARAM_EXT_SET %1, stored on the payload. Who may control the gimbal: with Autopilot "
+                                             "the payload drops this app's gimbal commands; an autopilot may need it back.")
+                                  .arg(QLatin1String(m_profile.gimbalControlId)));
+        connect(m_control, &QComboBox::activated, this, [this](int idx) {
+            report(m_link->cameraParam(QStringLiteral("Gimbal control source"), m_profile.gimbalControlId, m_control->itemData(idx).toUInt()));
+        });
+        m_controlHint = new QLabel;
+        m_controlHint->setWordWrap(true);
+        auto *row = new QHBoxLayout;
+        row->addWidget(new QLabel(QStringLiteral("Control source")));
+        row->addWidget(m_control, 1);
+        modes->addLayout(row, 2, 0, 1, 3);
+        modes->addWidget(m_controlHint, 3, 0, 1, 3);
+    }
 
     // Rate: hold to move, re-sent every 100 ms like Gremsy's ui_demo, zero on release
     m_speed = new QSlider(Qt::Horizontal);
     m_speed->setRange(1, 90);
     m_speed->setValue(20);
     m_speed->setPageStep(5);
-    m_speed->setToolTip(QStringLiteral("Speed of the arrow pad, also while a button is held. A VIO (software 3.1.4.18) turns at "
-                                       "the commanded rate × π/18, so the %1 profile sends it × %2 to get the speed shown here. "
-                                       "Compare with the measured rate in the telemetry below.")
-                            .arg(QLatin1String(profile.name)).arg(profile.gimbalRateScale, 0, 'f', 3));
+    m_speed->setToolTip(QStringLiteral("Speed of the arrow pad, also while a button is held. Compare with the measured rate "
+                                       "in the telemetry below."));
     auto *speedValue = new QLabel;
     speedValue->setObjectName(QStringLiteral("readout"));
     speedValue->setFont(monoFont(11));
@@ -272,18 +289,33 @@ void GimbalPage::refresh()
     const qint64 n = now();
     const auto &params = m_link->telemetry().payloadParams();
     QString gbMode = QStringLiteral("not received");
-    int gbValue = -1;
     for (auto it = params.cbegin(); it != params.cend(); ++it) {
         if (PayloadLink::payloadParamName(it.key()) != QLatin1String("GB_MODE")) continue;
         gbMode = QString::number(it->value);
-        if (n - it->monoNs <= qint64(to) * 1000000) gbValue = int(it->value);
         for (const ParamOption &o : m_profile.gimbalModes)
             if (o.value == unsigned(it->value)) gbMode = QLatin1String(o.label);
     }
-    for (const auto &[value, b] : m_modeButtons) setStyleFlag(b, "active", gbValue >= 0 && unsigned(gbValue) == value);
+
+    if (m_control) {
+        const auto &cam = m_link->telemetry().cameraParams();
+        const auto it = cam.constFind(QString::fromLatin1(m_profile.gimbalControlId));
+        const int idx = it == cam.cend() ? -1 : m_control->findData(unsigned(it->value));
+        if (!m_control->view()->isVisible() && m_control->currentIndex() != idx) m_control->setCurrentIndex(idx);  // never while open
+        if (it == cam.cend())
+            m_controlHint->setText(colored(QStringLiteral("Control source not read yet (read on connect)"), Theme::Dim));
+        else if (unsigned(it->value) != m_profile.gimbalControlOnboard)
+            m_controlHint->setText(colored(QStringLiteral("The payload ignores this app's gimbal commands (mode, move). Switch the "
+                                                          "control source to %1 to control the gimbal from here.")
+                                               .arg(m_control->itemText(m_control->findData(m_profile.gimbalControlOnboard))).toHtmlEscaped(),
+                                           Theme::Bad));
+        else
+            m_controlHint->clear();
+    }
 
     const CapturedFrame *c = m_link->telemetry().latest(MAVLINK_MSG_ID_GIMBAL_DEVICE_ATTITUDE_STATUS);
     GimbalAttitude a;
+    const bool fresh = c && gimbalAttitude(c->frame, &a) && n - c->monoNs <= qint64(to) * 1000000;
+    for (const auto &[name, b] : m_modeButtons) setStyleFlag(b, "active", fresh && GimbalFlags::modeName(a.flags).startsWith(name));
     if (!c || !gimbalAttitude(c->frame, &a)) {
         for (QLabel *l : {m_attitude, m_rates, m_mode, m_flags, m_failures, m_delta}) l->setText(agedValue({}, -1, 0, to));
         for (QLabel *l : m_readout) l->setText(colored(QStringLiteral("—"), Theme::Dim));

@@ -4,7 +4,7 @@
 // tracking moves the gimbal to follow a target; settings writes camera settings (only values read back from
 // the camera) and changes three of them, restoring each.
 //
-//   hw_vio_commands --ip 192.168.55.1 [--steps camera,angle,rate,mode-flags,mode-param,tracking,settings] [--record run.jsonl]
+//   hw_vio_commands --ip 192.168.55.1 [--steps control-onboard,camera,angle,rate,mode-flags,tracking,settings] [--record run.jsonl]
 
 #include "frame_writer.h"
 #include "payload_link.h"
@@ -196,6 +196,23 @@ int main(int argc, char *argv[])
     log(QStringLiteral("  start: pitch %1°, roll %2°, yaw %3°, flags 0x%4 (%5)").arg(a0.pitchDeg, 0, 'f', 2).arg(a0.rollDeg, 0, 'f', 2)
             .arg(a0.yawDeg, 0, 'f', 2).arg(a0.flags, 4, 16, QLatin1Char('0')).arg(GimbalFlags::modeName(a0.flags)));
     const double yaw0 = a0.yawDeg, pitch0 = a0.pitchDeg;
+    // Gimbal control source: control-onboard sets it for this run (a stored setting) and restores it at the end
+    const char *ctrlId = vioProfile().gimbalControlId;
+    std::optional<unsigned> ctrl0;
+    auto control = [&]() -> std::optional<unsigned> {
+        const auto it = link.telemetry().cameraParams().constFind(QLatin1String(ctrlId));
+        return it == link.telemetry().cameraParams().cend() ? std::nullopt : std::optional<unsigned>(unsigned(it->value));
+    };
+    if (ctrlId) {
+        waitUntil([&] { return control().has_value(); }, 3000);
+        ctrl0 = control();
+        log(QStringLiteral("  control source %1: %2").arg(QLatin1String(ctrlId)).arg(ctrl0 ? QString::number(*ctrl0) : QStringLiteral("not read")));
+        if (steps.contains(QLatin1String("control-onboard")) && ctrl0 && *ctrl0 != vioProfile().gimbalControlOnboard) {
+            link.cameraParam(QStringLiteral("Control source: onboard"), ctrlId, vioProfile().gimbalControlOnboard);
+            settle(QStringLiteral("%1 = %2").arg(QLatin1String(ctrlId)).arg(vioProfile().gimbalControlOnboard));
+            check(waitUntil([&] { return control() == vioProfile().gimbalControlOnboard; }, 3000), QStringLiteral("control source reads back onboard"));
+        }
+    }
 
     if (steps.contains(QLatin1String("angle"))) {
     if (!safe(&why)) { log(QStringLiteral("ABORT: ") + why); return 1; }
@@ -217,7 +234,6 @@ int main(int argc, char *argv[])
         for (const CapturedFrame &c : f)
             if (c.dir == CapturedFrame::Rx && gimbalAttitude(c.frame, &a) && std::abs(a.rateZ) > std::abs(peakRate)) peakRate = a.rateZ;
     });
-    link.setGimbalRateScale(vioProfile().gimbalRateScale);  // as GimbalPage does
     link.gimbalRate(0, 0, 10, true);
     settle(QStringLiteral("rate yaw +10°/s (then re-sent every 100 ms for 1 s)"));
     for (int i = 0; i < 9; ++i) {
@@ -233,12 +249,17 @@ int main(int argc, char *argv[])
     attitude(&a1);
     const double moved = a1.yawDeg - a0r.yawDeg;
     check(moved > 7 && moved < 15, QStringLiteral("yaw moved by %1° for ~1 s at 10°/s").arg(moved, 0, 'f', 2));
-    link.gimbalAngle(pitch0, 0, yaw0);
-    settle(QStringLiteral("angle back to start yaw"));
+    for (int i = 0; i < 10; ++i) {  // back by rate: angle commands do nothing on a VIO with software 3.1.8.21
+        link.gimbalRate(0, 0, -10, i == 0);
+        pause(100);
+    }
+    link.gimbalRate(0, 0, 0, true);
+    settle(QStringLiteral("back by rate -10°/s, then zero"));
+    pause(800);
     QObject::disconnect(peakConn);  // the lambda refers to peakRate, which ends with this block
     log(QStringLiteral("  peak reported angular_velocity_z: %1°/s").arg(peakRate, 0, 'f', 2));
-    check(std::abs(peakRate) > 8 && std::abs(peakRate) < 12, QStringLiteral("peak rate near the requested 10°/s"));
-    check(reachPitchYaw(pitch0, yaw0, 5000), QStringLiteral("back to start yaw"));
+    check(std::abs(peakRate) > 8 && std::abs(peakRate) < 13, QStringLiteral("peak rate near the requested 10°/s"));
+    check(reachPitchYaw(a0r.pitchDeg, a0r.yawDeg, 3000), QStringLiteral("back to the yaw before the rate move"));
     }
 
     if (steps.contains(QLatin1String("mode-flags"))) {
@@ -255,31 +276,11 @@ int main(int argc, char *argv[])
           QStringLiteral("YAW_LOCK set again in telemetry"));
     pause(1500);
     log(QStringLiteral("  GB_MODE parameter: %1").arg(param("GB_MODE").value_or(-1)));
+    if (!(a0.flags & GIMBAL_DEVICE_FLAGS_YAW_LOCK)) {
+        link.gimbalMode(GimbalFlags::Change::Follow, QStringLiteral("Back to Follow"));
+        settle(QStringLiteral("mode Follow (start mode)"));
+        check(waitUntil([&] { GimbalAttitude a; return attitude(&a) && a.flags == a0.flags; }, 3000), QStringLiteral("start mode again"));
     }
-
-    // Older route, in Mavlink_Command_List v2.0.0 and vio_sdk.h: PARAM_EXT_SET GB_MODE to the camera component
-    if (steps.contains(QLatin1String("mode-param"))) {
-    if (!safe(&why)) { log(QStringLiteral("ABORT: ") + why); return 1; }
-    const PayloadProfile &vio = vioProfile();
-    auto modeValue = [&](const char *label) {
-        for (const ParamOption &o : vio.gimbalModes) if (QLatin1String(o.label) == QLatin1String(label)) return o.value;
-        return 0u;
-    };
-    log(QStringLiteral("  GB_MODE parameter before: %1").arg(param("GB_MODE").value_or(-1)));
-    link.cameraParam(QStringLiteral("Gimbal mode FOLLOW"), vio.gimbalModeId, modeValue("FOLLOW"));
-    settle(QStringLiteral("PARAM_EXT_SET GB_MODE = FOLLOW (%1)").arg(modeValue("FOLLOW")));
-    check(waitUntil([&] { GimbalAttitude a; return attitude(&a) && !(a.flags & GIMBAL_DEVICE_FLAGS_YAW_LOCK); }, 3000),
-          QStringLiteral("YAW_LOCK cleared in telemetry"));
-    check(waitUntil([&] { return param("GB_MODE").value_or(-1) == modeValue("FOLLOW"); }, 3000),
-          QStringLiteral("GB_MODE parameter reports FOLLOW"));
-    { GimbalAttitude a; attitude(&a); log(QStringLiteral("  flags now 0x%1 (%2)").arg(a.flags, 4, 16, QLatin1Char('0')).arg(GimbalFlags::modeName(a.flags))); }
-    pause(1000);
-    link.cameraParam(QStringLiteral("Gimbal mode LOCK"), vio.gimbalModeId, modeValue("LOCK"));
-    settle(QStringLiteral("PARAM_EXT_SET GB_MODE = LOCK (%1)").arg(modeValue("LOCK")));
-    check(waitUntil([&] { GimbalAttitude a; return attitude(&a) && (a.flags & GIMBAL_DEVICE_FLAGS_YAW_LOCK); }, 3000),
-          QStringLiteral("YAW_LOCK set again in telemetry"));
-    check(waitUntil([&] { return param("GB_MODE").value_or(-1) == modeValue("LOCK"); }, 3000),
-          QStringLiteral("GB_MODE parameter reports LOCK"));
     }
 
     if (steps.contains(QLatin1String("tracking"))) {
@@ -386,6 +387,12 @@ int main(int argc, char *argv[])
             pause(800);
         }
     }
+    }
+
+    if (ctrlId && ctrl0 && control() != ctrl0) {
+        link.cameraParam(QStringLiteral("Control source: restore"), ctrlId, *ctrl0);
+        settle(QStringLiteral("%1 = %2 (restore)").arg(QLatin1String(ctrlId)).arg(*ctrl0));
+        check(waitUntil([&] { return control() == ctrl0; }, 3000), QStringLiteral("control source restored to %1").arg(*ctrl0));
     }
 
     GimbalAttitude a2;

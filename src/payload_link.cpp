@@ -159,8 +159,11 @@ void PayloadLink::poll()
     if (!out.empty()) emit framesCaptured(out);
     if (commands) emit commandsChanged();
 
-    // Once per connection, as Gremsy's ui_demo does: ask for info and start the parameter streams.
-    if (!m_autoInfoSent && isOpen(m_state) && m_telemetry.latest(MAVLINK_MSG_ID_HEARTBEAT, TelemetryStore::kPayloadCore)) {
+    // Once per connection, as Gremsy's ui_demo does: ask for info and start the parameter streams. The SDK addresses
+    // the camera at compid 101 until it hears the camera (100), so wait for that heartbeat too (at most 5 s).
+    const bool cameraKnown = m_telemetry.latest(MAVLINK_MSG_ID_HEARTBEAT, MAV_COMP_ID_CAMERA) ||
+                             (m_openSinceMs >= 0 && monoNs() / 1000000 - m_openSinceMs > 5000);
+    if (!m_autoInfoSent && isOpen(m_state) && cameraKnown && m_telemetry.latest(MAVLINK_MSG_ID_HEARTBEAT, TelemetryStore::kPayloadCore)) {
         m_autoInfoSent = true;
         requestPayloadInfo(true);
     }
@@ -242,12 +245,9 @@ bool PayloadLink::gimbalAngle(double pitch, double roll, double yaw)
 bool PayloadLink::gimbalRate(double pitch, double roll, double yaw, bool track)
 {
     if (!ready()) return false;
-    const double k = m_rateScale;
     if (track) {
-        const float p = float(pitch * k * M_PI / 180), y = float(yaw * k * M_PI / 180);
-        QString label = QStringLiteral("Gimbal rate pitch %1°/s roll %2°/s yaw %3°/s").arg(pitch).arg(roll).arg(yaw);
-        if (k != 1 && (pitch || roll || yaw)) label += QStringLiteral(" (sent ×%1, payload rate scale)").arg(k, 0, 'f', 3);
-        m_tracker.expect(label,
+        const float p = float(pitch * M_PI / 180), y = float(yaw * M_PI / 180);
+        m_tracker.expect(QStringLiteral("Gimbal rate pitch %1°/s roll %2°/s yaw %3°/s").arg(pitch).arg(roll).arg(yaw),
                          MAVLINK_MSG_ID_GIMBAL_DEVICE_SET_ATTITUDE, 0, {}, nowMs(), [p, y](const MavFrame &f) {
                              float q[4];
                              mavlink_msg_gimbal_device_set_attitude_get_q(&f.msg, q);
@@ -257,7 +257,7 @@ bool PayloadLink::gimbalRate(double pitch, double roll, double yaw, bool track)
                          });
         emit commandsChanged();
     }
-    m_sdk->setGimbalSpeed(float(pitch * k), float(roll * k), float(yaw * k), INPUT_SPEED);
+    m_sdk->setGimbalSpeed(float(pitch), float(roll), float(yaw), INPUT_SPEED);
     return true;
 }
 
@@ -440,6 +440,8 @@ bool PayloadLink::requestPayloadInfo(bool automatic)
     m_sdk->getPayloadStorage();
     track("Request capture status", MAV_CMD_REQUEST_CAMERA_CAPTURE_STATUS, MAVLINK_MSG_ID_CAMERA_CAPTURE_STATUS);
     m_sdk->getPayloadCaptureStatus();
+    m_tracker.expect(p + QStringLiteral("Read all camera settings"), MAVLINK_MSG_ID_PARAM_EXT_REQUEST_LIST, 0, {}, now);
+    m_sdk->getPayloadCameraSettingList();  // includes the gimbal control source the gimbal panel shows
 
     // DEBUG parameter streams, with the intervals (ms) Gremsy's tests/ui_demo/main.cpp uses
     static const std::pair<int, int> rates[] = {
